@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
-const moment = require('moment-timezone');
+const moment = require('moment-timezone'); // Asegúrate de que moment-timezone esté instalado y bien importado en el backend
 const authMiddleware = require('../middleware/authMiddleware');
-const authorizeRoles = require('../middleware/roleMiddleware'); 
+const authorizeRoles = require('../middleware/roleMiddleware');
 
 let Sale, Client, Product, Payment, SaleItem;
 
@@ -107,9 +107,6 @@ const initReportRoutes = (models) => {
             let orderByRaw;
             let aliasColumnName;
 
-            // *** CAMBIO CLAVE: Ajuste de la referencia a la columna a minúsculas en PostgreSQL si no se crearon con comillas ***
-            // Sequelize por defecto crea columnas en minúsculas. Usar "Sale"."saleDate" podría ser el problema si la columna es "saledate".
-            // Intentaremos referenciarla como "saledate" (todas minúsculas)
             switch (period) {
                 case 'day':
                     groupByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD')`);
@@ -132,7 +129,6 @@ const initReportRoutes = (models) => {
                     aliasColumnName = 'year';
                     break;
             }
-            // *** FIN CAMBIO CLAVE ***
 
             const accumulatedSales = await Sale.findAll({
                 attributes: [
@@ -143,7 +139,7 @@ const initReportRoutes = (models) => {
                 where: whereClause,
                 group: groupByRaw,
                 order: [orderByRaw],
-                raw: true 
+                raw: true
             });
 
             const formattedAccumulatedSales = accumulatedSales.map(item => {
@@ -184,7 +180,6 @@ const initReportRoutes = (models) => {
             let orderByRaw;
             let aliasColumnName;
 
-            // *** CAMBIO CLAVE: Ajuste de la referencia a la columna a minúsculas en PostgreSQL si no se crearon con comillas ***
             switch (period) {
                 case 'day':
                     groupByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD')`);
@@ -207,7 +202,6 @@ const initReportRoutes = (models) => {
                     aliasColumnName = 'year';
                     break;
             }
-            // *** FIN CAMBIO CLAVE ***
 
             const accumulatedPayments = await Payment.findAll({
                 attributes: [
@@ -362,16 +356,18 @@ const initReportRoutes = (models) => {
                 let nextPaymentDueDate = null;
 
                 if (sale.payments && sale.payments.length > 0) {
-                    const lastPaymentDate = moment(sale.payments[sale.payments.length - 1].paymentDate).tz(TIMEZONE).startOf('day');
-                    nextPaymentDueDate = lastPaymentDate.add(7, 'days').startOf('day');
+                    const sortedPayments = sale.payments.sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate));
+                    const latestPayment = sortedPayments[0]; // Último pago
+                    const lastPaymentMoment = moment(latestPayment.paymentDate).tz(TIMEZONE).startOf('day');
+                    nextPaymentDueDate = lastPaymentMoment.add(7, 'days').startOf('day');
                 } else {
                     nextPaymentDueDate = moment(sale.saleDate).tz(TIMEZONE).add(7, 'days').startOf('day');
                 }
-                
+
 
                 if (nextPaymentDueDate.isBefore(today)) {
                     clientsStatus.vencidos.add(clientId);
-                } else if (nextPaymentDueDate.diff(today, 'days') <= daysToDueSoon) {
+                } else if (nextPaymentDueDate.diff(today, 'days') < daysToDueSoon) { // <-- CORRECCIÓN CLAVE AQUÍ: de <= a <
                     clientsStatus.porVencer.add(clientId);
                 } else {
                     clientsStatus.alCorriente.add(clientId);
@@ -489,7 +485,7 @@ const initReportRoutes = (models) => {
                         } else {
                             nextPaymentDueDate = moment(sale.saleDate).tz(TIMEZONE).add(7, 'days').startOf('day');
                         }
-                        
+
                         if (nextPaymentDueDate.isBefore(today)) {
                             hasOverdueSale = true;
                             break;
