@@ -1,3 +1,4 @@
+// VERSIÓN FINAL CORREGIDA: Incluye validación de datos para evitar que ExcelJS falle.
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
@@ -35,8 +36,6 @@ const initProductRoutes = (models) => {
                 const sortOrder = (order && (order.toLowerCase() === 'asc' || order.toLowerCase() === 'desc')) ? order.toLowerCase() : 'asc';
                 if (validSortBy.includes(sortBy)) {
                     options.order = [[sortBy, sortOrder.toUpperCase()]];
-                } else {
-                    console.warn(`Intento de ordenar por columna inválida: ${sortBy}`);
                 }
             } else {
                 options.order = [['createdAt', 'DESC']];
@@ -78,7 +77,7 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // RUTA MEJORADA Y MÁS ROBUSTA PARA EXPORTAR
+    // RUTA PARA EXPORTAR A EXCEL - VERSIÓN ROBUSTA Y CORREGIDA
     router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const productsToExport = await Product.findAll({
@@ -100,7 +99,7 @@ const initProductRoutes = (models) => {
                 { header: 'Última Actualización', key: 'updatedAt', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } }
             ];
 
-            // Validación de datos para evitar "crash" del servidor
+            // Bucle de validación para asegurar que no haya datos inválidos
             productsToExport.forEach(product => {
                 worksheet.addRow({
                     productId: product.id,
@@ -127,26 +126,15 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // Rutas protegidas
+    // Rutas para crear, actualizar y eliminar
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
-
-            if (!Array.isArray(imageUrls) || !imageUrls.every(url => typeof url === 'string')) {
-                return res.status(400).json({ message: 'imageUrls debe ser un arreglo de URLs (strings).' });
-            }
-
-            const newProduct = await Product.create({
-                name, description, price, stock,
-                imageUrls: imageUrls || [],
-                category, brand
-            });
+            const finalImageUrls = Array.isArray(imageUrls) ? imageUrls : [];
+            const newProduct = await Product.create({ name, description, price, stock, imageUrls: finalImageUrls, category, brand });
             res.status(201).json(newProduct);
         } catch (error) {
             console.error('Error al crear producto:', error);
-            if (error.name === 'SequelizeUniqueConstraintError') {
-                return res.status(400).json({ message: 'Ya existe un producto con este nombre.' });
-            }
             res.status(500).json({ message: 'Error interno del servidor al crear producto.' });
         }
     });
@@ -154,40 +142,21 @@ const initProductRoutes = (models) => {
     router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
-
-            if (!Array.isArray(imageUrls) || !imageUrls.every(url => typeof url === 'string')) {
-                return res.status(400).json({ message: 'imageUrls debe ser un arreglo de URLs (strings).' });
-            }
-
-            const [updatedRows] = await Product.update({
-                name, description, price, stock,
-                imageUrls: imageUrls || [],
-                category, brand
-            }, {
-                where: { id: req.params.id }
-            });
-            if (updatedRows === 0) {
-                return res.status(404).json({ message: 'Producto no encontrado o no se realizaron cambios.' });
-            }
+            const finalImageUrls = Array.isArray(imageUrls) ? imageUrls : [];
+            const [updatedRows] = await Product.update({ name, description, price, stock, imageUrls: finalImageUrls, category, brand }, { where: { id: req.params.id } });
+            if (updatedRows === 0) return res.status(404).json({ message: 'Producto no encontrado.' });
             const updatedProduct = await Product.findByPk(req.params.id);
             res.json(updatedProduct);
         } catch (error) {
             console.error('Error al actualizar producto:', error);
-            if (error.name === 'SequelizeUniqueConstraintError') {
-                return res.status(400).json({ message: 'Ya existe un producto con este nombre.' });
-            }
             res.status(500).json({ message: 'Error interno del servidor al actualizar producto.' });
         }
     });
 
     router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
         try {
-            const deletedRows = await Product.destroy({
-                where: { id: req.params.id }
-            });
-            if (deletedRows === 0) {
-                return res.status(404).json({ message: 'Producto no encontrado.' });
-            }
+            const deletedRows = await Product.destroy({ where: { id: req.params.id } });
+            if (deletedRows === 0) return res.status(404).json({ message: 'Producto no encontrado.' });
             res.status(204).send();
         } catch (error) {
             console.error('Error al eliminar producto:', error);
