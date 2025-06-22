@@ -3,7 +3,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op } = require('sequelize');
-const ExcelJS = require('exceljs'); // <-- AÑADIDO: Importación de ExcelJS
+const ExcelJS = require('exceljs');
 
 let Product;
 
@@ -78,7 +78,7 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // NUEVA RUTA: Exportar productos a Excel
+    // RUTA MEJORADA Y MÁS ROBUSTA PARA EXPORTAR
     router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const productsToExport = await Product.findAll({
@@ -88,7 +88,6 @@ const initProductRoutes = (models) => {
             const workbook = new ExcelJS.Workbook();
             const worksheet = workbook.addWorksheet('Reporte de Inventario');
 
-            // Definir columnas y encabezados
             worksheet.columns = [
                 { header: 'ID Producto', key: 'productId', width: 15 },
                 { header: 'Nombre', key: 'name', width: 30 },
@@ -101,36 +100,34 @@ const initProductRoutes = (models) => {
                 { header: 'Última Actualización', key: 'updatedAt', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } }
             ];
 
-            // Añadir filas de datos
+            // Validación de datos para evitar "crash" del servidor
             productsToExport.forEach(product => {
                 worksheet.addRow({
                     productId: product.id,
                     name: product.name,
                     description: product.description,
-                    price: product.price,
-                    stock: product.stock,
+                    price: typeof product.price === 'number' ? product.price : 0.00,
+                    stock: typeof product.stock === 'number' ? product.stock : 0,
                     category: product.category,
                     brand: product.brand,
-                    createdAt: product.createdAt, // ExcelJS maneja objetos Date correctamente
-                    updatedAt: product.updatedAt
+                    createdAt: product.createdAt instanceof Date ? product.createdAt : null,
+                    updatedAt: product.updatedAt instanceof Date ? product.updatedAt : null
                 });
             });
 
-            // Configurar cabeceras de la respuesta para la descarga del archivo
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
             res.setHeader('Content-Disposition', 'attachment; filename=inventario_productos.xlsx');
 
-            // Escribir el libro de trabajo en el stream de respuesta
             await workbook.xlsx.write(res);
             res.end();
 
         } catch (error) {
             console.error('CRITICAL ERROR al exportar inventario a Excel (Backend):', error);
-            res.status(500).json({ message: 'Error interno del servidor al exportar inventario. Por favor, revisa los logs del servidor para más detalles.', error: error.message });
+            res.status(500).json({ message: 'Error interno del servidor al exportar inventario.', error: error.message });
         }
     });
 
-    // Rutas protegidas (requieren autenticación Y rol específico)
+    // Rutas protegidas
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
