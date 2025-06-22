@@ -1,8 +1,7 @@
-// VERSIÓN FINAL COMPLETA - Contiene todas las rutas originales con las correcciones lógicas aplicadas.
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
-const moment = require('moment-timezone');
+const moment = require('moment-timezone'); // Asegúrate de que moment-timezone esté instalado y bien importado en el backend
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 
@@ -19,106 +18,249 @@ const initReportRoutes = (models) => {
 
     console.log('DEBUG: Inicializando rutas de reportes...');
 
-    // --- Rutas que estaban correctas en el archivo original ---
     router.get('/sales-by-date-range', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        console.log('DEBUG: Petición a /api/reports/sales-by-date-range recibida.');
         const { startDate, endDate } = req.query;
-        if (!startDate || !endDate) return res.status(400).json({ message: 'Se requieren startDate y endDate.' });
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({ message: 'Se requieren startDate y endDate para el reporte de ventas por rango de fecha.' });
+        }
+
         try {
             const startMoment = moment.tz(startDate, 'YYYY-MM-DD', TIMEZONE).startOf('day');
             const endMoment = moment.tz(endDate, 'YYYY-MM-DD', TIMEZONE).endOf('day');
+
             const sales = await Sale.findAll({
-                where: { saleDate: { [Op.between]: [startMoment.toDate(), endMoment.toDate()] } },
-                include: [{ model: Client, as: 'client' }, { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }],
+                where: {
+                    saleDate: {
+                        [Op.between]: [startMoment.toDate(), endMoment.toDate()]
+                    }
+                },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }
+                ],
                 order: [['saleDate', 'ASC']]
             });
+
             res.json(sales);
         } catch (error) {
             console.error('ERROR en /sales-by-date-range:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al obtener ventas por rango de fecha.' });
         }
     });
 
     router.get('/payments-by-date-range', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        console.log('DEBUG: Petición a /api/reports/payments-by-date-range recibida.');
         const { startDate, endDate } = req.query;
-        if (!startDate || !endDate) return res.status(400).json({ message: 'Se requieren startDate y endDate.' });
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({ message: 'Se requieren startDate y endDate para el reporte de pagos por rango de fecha.' });
+        }
+
         try {
             const startMoment = moment.tz(startDate, 'YYYY-MM-DD', TIMEZONE).startOf('day');
             const endMoment = moment.tz(endDate, 'YYYY-MM-DD', TIMEZONE).endOf('day');
+
             const payments = await Payment.findAll({
-                where: { paymentDate: { [Op.between]: [startMoment.toDate(), endMoment.toDate()] } },
-                include: [{ model: Sale, as: 'sale', include: [{ model: Client, as: 'client' }] }],
+                where: {
+                    paymentDate: {
+                        [Op.between]: [startMoment.toDate(), endMoment.toDate()]
+                    }
+                },
+                include: [
+                    { model: Sale, as: 'sale', include: [
+                        { model: Client, as: 'client' },
+                        { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }
+                    ]}
+                ],
                 order: [['paymentDate', 'ASC']]
             });
+
             res.json(payments);
         } catch (error) {
             console.error('ERROR en /payments-by-date-range:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al obtener pagos por rango de fecha.' });
         }
     });
 
+
     router.get('/sales-accumulated', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        const { period = 'day', startDate, endDate } = req.query;
+        console.log('DEBUG: Petición a /api/reports/sales-accumulated recibida.');
+        const { period, startDate, endDate } = req.query;
+
+        if (!['day', 'week', 'month', 'year'].includes(period)) {
+            return res.status(400).json({ message: 'El parámetro period debe ser "day", "week", "month" o "year".' });
+        }
+
         try {
             let whereClause = {};
             if (startDate && endDate) {
-                whereClause.saleDate = { [Op.between]: [moment.tz(startDate, TIMEZONE).startOf('day').toDate(), moment.tz(endDate, TIMEZONE).endOf('day').toDate()] };
+                const startMoment = moment.tz(startDate, 'YYYY-MM-DD', TIMEZONE).startOf('day');
+                const endMoment = moment.tz(endDate, 'YYYY-MM-DD', TIMEZONE).endOf('day');
+                whereClause.saleDate = {
+                    [Op.between]: [startMoment.toDate(), endMoment.toDate()]
+                };
             }
+
             let groupByRaw;
+            let orderByRaw;
+            let aliasColumnName;
+
             switch (period) {
-                case 'week': groupByRaw = `TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-WW')`; break;
-                case 'month': groupByRaw = `TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM')`; break;
-                case 'year': groupByRaw = `TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY')`; break;
-                default: groupByRaw = `TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD')`; break;
+                case 'day':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD') ASC`);
+                    aliasColumnName = 'day';
+                    break;
+                case 'week':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-WW')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-WW') ASC`);
+                    aliasColumnName = 'week';
+                    break;
+                case 'month':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM') ASC`);
+                    aliasColumnName = 'month';
+                    break;
+                case 'year':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Sale"."saleDate" AT TIME ZONE '${TIMEZONE}', 'YYYY') ASC`);
+                    aliasColumnName = 'year';
+                    break;
             }
+
             const accumulatedSales = await Sale.findAll({
-                attributes: [[Sequelize.literal(groupByRaw), 'periodKey'], [Sequelize.fn('SUM', Sequelize.col('totalAmount')), 'totalAmount'], [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+                attributes: [
+                    [groupByRaw, 'periodKey'],
+                    [Sequelize.fn('SUM', Sequelize.col('totalAmount')), 'totalAmount'],
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+                ],
                 where: whereClause,
-                group: [Sequelize.literal(groupByRaw)],
-                order: [Sequelize.literal(`${groupByRaw} ASC`)],
+                group: groupByRaw,
+                order: [orderByRaw],
                 raw: true
             });
-            res.json(accumulatedSales.map(item => ({ period: item.periodKey, totalAmount: parseFloat(item.totalAmount), count: parseInt(item.count) })));
+
+            const formattedAccumulatedSales = accumulatedSales.map(item => {
+                return {
+                    [aliasColumnName]: item.periodKey,
+                    totalAmount: parseFloat(item.totalAmount.toFixed(2)),
+                    count: item.count
+                };
+            });
+
+            res.json(formattedAccumulatedSales);
+
         } catch (error) {
             console.error('ERROR en /sales-accumulated:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: error.message || 'Error interno del servidor al obtener ventas acumuladas.' });
         }
     });
 
     router.get('/payments-accumulated', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        const { period = 'day', startDate, endDate } = req.query;
+        console.log('DEBUG: Petición a /api/reports/payments-accumulated recibida.');
+        const { period, startDate, endDate } = req.query;
+
+        if (!['day', 'week', 'month', 'year'].includes(period)) {
+            return res.status(400).json({ message: 'El parámetro period debe ser "day", "week", "month" o "year".' });
+        }
+
         try {
             let whereClause = {};
             if (startDate && endDate) {
-                whereClause.paymentDate = { [Op.between]: [moment.tz(startDate, TIMEZONE).startOf('day').toDate(), moment.tz(endDate, TIMEZONE).endOf('day').toDate()] };
+                const startMoment = moment.tz(startDate, 'YYYY-MM-DD', TIMEZONE).startOf('day');
+                const endMoment = moment.tz(endDate, 'YYYY-MM-DD', TIMEZONE).endOf('day');
+                whereClause.paymentDate = {
+                    [Op.between]: [startMoment.toDate(), endMoment.toDate()]
+                };
             }
+
             let groupByRaw;
+            let orderByRaw;
+            let aliasColumnName;
+
             switch (period) {
-                case 'week': groupByRaw = `TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-WW')`; break;
-                case 'month': groupByRaw = `TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM')`; break;
-                case 'year': groupByRaw = `TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY')`; break;
-                default: groupByRaw = `TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD')`; break;
+                case 'day':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM-DD') ASC`);
+                    aliasColumnName = 'day';
+                    break;
+                case 'week':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-WW')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-WW') ASC`);
+                    aliasColumnName = 'week';
+                    break;
+                case 'month':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY-MM') ASC`);
+                    aliasColumnName = 'month';
+                    break;
+                case 'year':
+                    groupByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY')`);
+                    orderByRaw = Sequelize.literal(`TO_CHAR("Payment"."paymentDate" AT TIME ZONE '${TIMEZONE}', 'YYYY') ASC`);
+                    aliasColumnName = 'year';
+                    break;
             }
+
             const accumulatedPayments = await Payment.findAll({
-                attributes: [[Sequelize.literal(groupByRaw), 'periodKey'], [Sequelize.fn('SUM', Sequelize.col('amount')), 'totalAmount'], [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+                attributes: [
+                    [groupByRaw, 'periodKey'],
+                    [Sequelize.fn('SUM', Sequelize.col('amount')), 'totalAmount'],
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+                ],
                 where: whereClause,
-                group: [Sequelize.literal(groupByRaw)],
-                order: [Sequelize.literal(`${groupByRaw} ASC`)],
+                group: groupByRaw,
+                order: [orderByRaw],
                 raw: true
             });
-            res.json(accumulatedPayments.map(item => ({ period: item.periodKey, totalAmount: parseFloat(item.totalAmount), count: parseInt(item.count) })));
+
+            const formattedAccumulatedPayments = accumulatedPayments.map(item => {
+                return {
+                    [aliasColumnName]: item.periodKey,
+                    totalAmount: parseFloat(item.totalAmount.toFixed(2)),
+                    count: item.count
+                };
+            });
+
+            res.json(formattedAccumulatedPayments);
+
         } catch (error) {
             console.error('ERROR en /payments-accumulated:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: error.message || 'Error interno del servidor al obtener pagos acumulados.' });
         }
     });
 
+
     router.get('/summary', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        console.log('DEBUG: Petición a /api/reports/summary recibida.');
         try {
-            const totalBalanceDue = (await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } })) || 0;
-            const activeCreditSalesCount = await Sale.count({ where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
-            const totalPaymentsReceived = (await Payment.sum('amount')) || 0;
+            const totalBalanceDueResult = await Sale.sum('balanceDue', {
+                where: {
+                    isCredit: true,
+                    balanceDue: {
+                        [Op.gt]: 0
+                    }
+                }
+            });
+            const totalBalanceDue = totalBalanceDueResult || 0;
+
+            const activeCreditSalesCount = await Sale.count({
+                where: {
+                    isCredit: true,
+                    balanceDue: {
+                        [Op.gt]: 0
+                    }
+                }
+            });
+
+            const totalPaymentsReceivedResult = await Payment.sum('amount');
+            const totalPaymentsReceived = totalPaymentsReceivedResult || 0;
+
             const totalClientsCount = await Client.count();
+
             const totalSalesCount = await Sale.count();
+
             res.json({
                 totalBalanceDue: parseFloat(totalBalanceDue.toFixed(2)),
                 activeCreditSalesCount,
@@ -126,154 +268,260 @@ const initReportRoutes = (models) => {
                 totalClientsCount,
                 totalSalesCount
             });
+
         } catch (error) {
             console.error('ERROR en /summary:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al obtener resumen de cobranza.' });
         }
     });
 
     router.get('/pending-credits', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        console.log('DEBUG: Petición a /api/reports/pending-credits recibida.');
         try {
             const pendingCredits = await Sale.findAll({
-                where: { isCredit: true, balanceDue: { [Op.gt]: 0 } },
-                include: [{ model: Client, as: 'client' }, { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }, { model: Payment, as: 'payments' }],
+                where: {
+                    isCredit: true,
+                    balanceDue: {
+                        [Op.gt]: 0
+                    },
+                    status: {
+                        [Op.ne]: 'paid_off'
+                    }
+                },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments' }
+                ],
                 order: [['balanceDue', 'DESC']]
             });
-            res.json(pendingCredits);
+
+            const formattedPendingCredits = pendingCredits.map(sale => {
+                const paymentsMade = sale.payments ? sale.payments.length : 0;
+                return {
+                    ...sale.toJSON(),
+                    paymentsMade: paymentsMade,
+                    paymentsRemaining: sale.numberOfPayments ? sale.numberOfPayments - paymentsMade : 'N/A'
+                };
+            });
+
+            res.json(formattedPendingCredits);
+
         } catch (error) {
             console.error('ERROR en /pending-credits:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al obtener créditos pendientes.' });
         }
     });
 
-    router.get('/client-statement/:clientId', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        const { clientId } = req.params;
-        try {
-            const client = await Client.findByPk(clientId);
-            if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
-            const sales = await Sale.findAll({
-                where: { clientId: clientId },
-                include: [{ model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }, { model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }],
-                order: [['saleDate', 'ASC']]
-            });
-            const totalClientBalanceDue = sales.reduce((acc, sale) => acc + (sale.isCredit ? sale.balanceDue : 0), 0);
-            res.json({ client, sales, totalClientBalanceDue: parseFloat(totalClientBalanceDue.toFixed(2)) });
-        } catch (error) {
-            console.error('ERROR en /client-statement:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
-        }
-    });
-
-    // --- RUTA CON LÓGICA CORREGIDA ---
     router.get('/client-status-dashboard', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        console.log('DEBUG: Petición a /api/reports/client-status-dashboard recibida.');
         try {
             const allCreditSales = await Sale.findAll({
                 where: { isCredit: true },
-                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }]
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: Payment, as: 'payments' }
+                ]
             });
 
-            const salesByClient = allCreditSales.reduce((acc, sale) => {
+            let clientsStatus = {
+                alCorriente: new Set(),
+                porVencer: new Set(),
+                vencidos: new Set(),
+                pagados: new Set(),
+                totalClientesConCredito: new Set()
+            };
+
+            const paidOffClientIds = await Sale.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('clientId')), 'clientId']],
+                where: {
+                    isCredit: true,
+                    balanceDue: { [Op.lte]: 0 }
+                },
+                raw: true
+            });
+            paidOffClientIds.forEach(c => clientsStatus.pagados.add(c.clientId));
+
+
+            const today = moment().tz(TIMEZONE).startOf('day');
+            const daysToDueSoon = 7;
+
+            for (const sale of allCreditSales) {
                 const clientId = sale.clientId;
-                if (!acc[clientId]) acc[clientId] = [];
-                acc[clientId].push(sale);
-                return acc;
-            }, {});
+                clientsStatus.totalClientesConCredito.add(clientId);
 
-            const clientStatusMap = new Map();
-            const today = moment.tz(TIMEZONE).startOf('day');
-            
-            for (const clientId in salesByClient) {
-                const clientSales = salesByClient[clientId];
-                let clientStatus = 'pagado';
-                let hasOverdue = false;
-                let hasDueSoon = false;
+                if (sale.balanceDue <= 0) continue;
 
-                for (const sale of clientSales) {
-                    if (sale.balanceDue > 0) {
-                        clientStatus = 'alCorriente';
-                        const lastPaymentDate = sale.payments.length > 0 ? sale.payments[sale.payments.length - 1].paymentDate : sale.saleDate;
-                        const nextPaymentDueDate = moment(lastPaymentDate).tz(TIMEZONE).add(7, 'days').startOf('day');
-                        if (nextPaymentDueDate.isBefore(today)) {
-                            hasOverdue = true;
-                            break;
-                        }
-                        if (nextPaymentDueDate.diff(today, 'days') < 7) {
-                            hasDueSoon = true;
-                        }
-                    }
+
+                let nextPaymentDueDate = null;
+
+                if (sale.payments && sale.payments.length > 0) {
+                    const sortedPayments = sale.payments.sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate));
+                    const latestPayment = sortedPayments[0]; // Último pago
+                    const lastPaymentMoment = moment(latestPayment.paymentDate).tz(TIMEZONE).startOf('day');
+                    nextPaymentDueDate = lastPaymentMoment.add(7, 'days').startOf('day');
+                } else {
+                    nextPaymentDueDate = moment(sale.saleDate).tz(TIMEZONE).add(7, 'days').startOf('day');
                 }
 
-                if (hasOverdue) clientStatus = 'vencido';
-                else if (hasDueSoon) clientStatus = 'porVencer';
-                clientStatusMap.set(parseInt(clientId, 10), clientStatus);
+
+                if (nextPaymentDueDate.isBefore(today)) {
+                    clientsStatus.vencidos.add(clientId);
+                } else if (nextPaymentDueDate.diff(today, 'days') < daysToDueSoon) { // <-- CORRECCIÓN CLAVE AQUÍ: de <= a <
+                    clientsStatus.porVencer.add(clientId);
+                } else {
+                    clientsStatus.alCorriente.add(clientId);
+                }
             }
 
-            let counts = { alCorriente: 0, porVencer: 0, vencidos: 0, pagados: 0 };
-            for (const status of clientStatusMap.values()) counts[status]++;
-            
-            res.json({
-                alCorriente: counts.alCorriente,
-                porVencer: counts.porVencer,
-                vencidos: counts.vencidos,
-                pagados: counts.pagados,
-                totalActivos: counts.alCorriente + counts.porVencer + counts.vencidos
+            clientsStatus.porVencer.forEach(id => {
+                if (clientsStatus.vencidos.has(id)) {
+                    clientsStatus.porVencer.delete(id);
+                }
             });
+            clientsStatus.alCorriente.forEach(id => {
+                if (clientsStatus.vencidos.has(id) || clientsStatus.porVencer.has(id)) {
+                    clientsStatus.alCorriente.delete(id);
+                }
+            });
+            const totalActivosCount = clientsStatus.alCorriente.size + clientsStatus.porVencer.size + clientsStatus.vencidos.size;
+
+
+            res.json({
+                alCorriente: clientsStatus.alCorriente.size,
+                porVencer: clientsStatus.porVencer.size,
+                vencidos: clientsStatus.vencidos.size,
+                pagados: clientsStatus.pagados.size,
+                totalActivos: totalActivosCount
+            });
+
         } catch (error) {
             console.error('ERROR en /client-status-dashboard:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al obtener dashboard de clientes por estado.' });
         }
     });
 
-    // --- RUTA CON LÓGICA CORREGIDA ---
+
+    router.get('/client-statement/:clientId', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        console.log('DEBUG: Petición a /api/reports/client-statement/:clientId recibida para cliente ID:', req.params.clientId);
+        const { clientId } = req.params;
+
+        try {
+            const client = await Client.findByPk(clientId);
+            console.log('DEBUG: Cliente encontrado:', !!client);
+
+            if (!client) {
+                console.log('DEBUG: Cliente no encontrado, enviando 404.');
+                return res.status(404).json({ message: 'Cliente no encontrado.' });
+            }
+
+            const sales = await Sale.findAll({
+                where: { clientId: clientId },
+                include: [
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+            console.log('DEBUG: Ventas encontradas para cliente:', sales.length);
+
+            let totalClientBalanceDue = 0;
+            sales.forEach(sale => {
+                if (sale.isCredit) {
+                    totalClientBalanceDue += sale.balanceDue;
+                }
+            });
+
+            console.log('DEBUG: Enviando respuesta para estado de cuenta.');
+            res.json({
+                client: client,
+                sales: sales,
+                totalClientBalanceDue: parseFloat(totalClientBalanceDue.toFixed(2))
+            });
+
+        } catch (error) {
+            console.error('ERROR en /client-statement:', error);
+            res.status(500).json({ message: 'Error interno del servidor al obtener estado de cuenta del cliente.' });
+        }
+    });
+
     router.get('/client-risk/:clientId', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         const { clientId } = req.params;
         try {
             const client = await Client.findByPk(clientId);
-            if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
-            
-            const creditSales = await Sale.findAll({
-                where: { clientId: clientId, isCredit: true },
-                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }] // Orden asegurado
+            if (!client) {
+                return res.status(404).json({ message: 'Cliente no encontrado.' });
+            }
+
+            const allCreditSales = await Sale.findAll({
+                where: {
+                    clientId: clientId,
+                    isCredit: true
+                },
+                include: [
+                    { model: Payment, as: 'payments' }
+                ]
             });
 
-            if (creditSales.length === 0) {
-                return res.json({ clientId, riskCategory: 'BAJO', riskDetails: 'El cliente no tiene historial de crédito.' });
-            }
+            let riskCategory = 'Desconocido';
+            let riskDetails = 'No hay suficientes datos de crédito para un análisis.';
 
-            let hasOverdueSale = false;
-            let hasDueSoonSale = false;
-            const today = moment.tz(TIMEZONE).startOf('day');
+            if (allCreditSales.length > 0) {
+                let hasOverdueSale = false;
+                let hasDueSoonSale = false;
+                let allPaidOff = true;
 
-            for (const sale of creditSales) {
-                if (sale.balanceDue > 0) {
-                    const lastPaymentDate = sale.payments.length > 0 ? sale.payments[sale.payments.length - 1].paymentDate : sale.saleDate;
-                    const nextPaymentDueDate = moment(lastPaymentDate).tz(TIMEZONE).add(7, 'days').startOf('day');
-                    if (nextPaymentDueDate.isBefore(today)) {
-                        hasOverdueSale = true;
-                        break;
-                    }
-                    if (nextPaymentDueDate.diff(today, 'days') < 7) {
-                        hasDueSoonSale = true;
+                const today = moment().tz(TIMEZONE).startOf('day');
+                const daysToDueSoon = 7;
+
+                for (const sale of allCreditSales) {
+                    if (sale.balanceDue > 0) {
+                        allPaidOff = false;
+
+                        let nextPaymentDueDate = null;
+                        if (sale.payments && sale.payments.length > 0) {
+                            const lastPaymentDate = moment(sale.payments[sale.payments.length - 1].paymentDate).tz(TIMEZONE).startOf('day');
+                            nextPaymentDueDate = lastPaymentDate.add(7, 'days').startOf('day');
+                        } else {
+                            nextPaymentDueDate = moment(sale.saleDate).tz(TIMEZONE).add(7, 'days').startOf('day');
+                        }
+
+                        if (nextPaymentDueDate.isBefore(today)) {
+                            hasOverdueSale = true;
+                            break;
+                        } else if (nextPaymentDueDate.diff(today, 'days') <= daysToDueSoon) {
+                            hasDueSoonSale = true;
+                        }
                     }
                 }
-            }
-            
-            let riskCategory = 'BAJO';
-            let riskDetails = 'Sus ventas a crédito están al corriente.';
-            if (hasOverdueSale) {
-                riskCategory = 'ALTO';
-                riskDetails = 'Tiene una o más ventas a crédito vencidas.';
-            } else if (hasDueSoonSale) {
-                riskCategory = 'MEDIO';
-                riskDetails = 'Tiene ventas a crédito por vencer en los próximos 7 días.';
+
+                if (hasOverdueSale) {
+                    riskCategory = 'ALTO';
+                    riskDetails = 'Tiene una o más ventas a crédito vencidas (en mora).';
+                } else if (hasDueSoonSale) {
+                    riskCategory = 'MEDIO';
+                    riskDetails = `Tiene ventas a crédito por vencer en los próximos ${daysToDueSoon} días.`;
+                } else if (allPaidOff) {
+                    riskCategory = 'BAJO';
+                    riskDetails = 'Todas las ventas a crédito han sido pagadas o están al corriente.';
+                } else {
+                    riskCategory = 'BAJO';
+                    riskDetails = 'Sus ventas a crédito están al corriente.';
+                }
             }
 
-            res.json({ clientId, riskCategory, riskDetails });
+            res.json({
+                clientId: clientId,
+                riskCategory: riskCategory,
+                riskDetails: riskDetails
+            });
+
         } catch (error) {
             console.error('ERROR en /client-risk:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al calcular el riesgo del cliente.' });
         }
     });
+
 
     return router;
 };
