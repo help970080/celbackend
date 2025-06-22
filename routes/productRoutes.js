@@ -1,4 +1,3 @@
-// VERSIÓN FINAL CORREGIDA: Incluye validación de datos para evitar que ExcelJS falle.
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
@@ -77,54 +76,27 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // RUTA PARA EXPORTAR A EXCEL - VERSIÓN ROBUSTA Y CORREGIDA
+    // PRUEBA FINAL DE DIAGNÓSTICO: Para confirmar que los logs de Render funcionan.
     router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
+    
+        console.log('--- INICIANDO PRUEBA FINAL: Forzando un error deliberado. ---');
+        
         try {
-            const productsToExport = await Product.findAll({
-                order: [['name', 'ASC']]
-            });
-
-            const workbook = new ExcelJS.Workbook();
-            const worksheet = workbook.addWorksheet('Reporte de Inventario');
-
-            worksheet.columns = [
-                { header: 'ID Producto', key: 'productId', width: 15 },
-                { header: 'Nombre', key: 'name', width: 30 },
-                { header: 'Descripción', key: 'description', width: 40 },
-                { header: 'Precio ($)', key: 'price', width: 15, style: { numFmt: '#,##0.00' } },
-                { header: 'Stock Actual', key: 'stock', width: 15 },
-                { header: 'Categoría', key: 'category', width: 20 },
-                { header: 'Marca', key: 'brand', width: 20 },
-                { header: 'Fecha Creación', key: 'createdAt', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } },
-                { header: 'Última Actualización', key: 'updatedAt', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } }
-            ];
-
-            // Bucle de validación para asegurar que no haya datos inválidos
-            productsToExport.forEach(product => {
-                worksheet.addRow({
-                    productId: product.id,
-                    name: product.name,
-                    description: product.description,
-                    price: typeof product.price === 'number' ? product.price : 0.00,
-                    stock: typeof product.stock === 'number' ? product.stock : 0,
-                    category: product.category,
-                    brand: product.brand,
-                    createdAt: product.createdAt instanceof Date ? product.createdAt : null,
-                    updatedAt: product.updatedAt instanceof Date ? product.updatedAt : null
-                });
-            });
-
-            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', 'attachment; filename=inventario_productos.xlsx');
-
-            await workbook.xlsx.write(res);
-            res.end();
-
+            // Forzamos un error con un mensaje único y fácil de buscar.
+            // Este error no usa la base de datos ni ExcelJS. Es un error puro.
+            throw new Error('ESTE_ES_UN_ERROR_DE_PRUEBA_DELIBERADO_12345');
+        
         } catch (error) {
-            console.error('CRITICAL ERROR al exportar inventario a Excel (Backend):', error);
-            res.status(500).json({ message: 'Error interno del servidor al exportar inventario.', error: error.message });
+            // Este bloque DEBE ejecutarse y registrar el error en Render.
+            console.error('--- PRUEBA FINAL CAPTURADA EN EL BACKEND ---:', error);
+            
+            res.status(500).json({ 
+                message: 'Prueba de error deliberado del servidor.', 
+                error: error.message 
+            });
         }
     });
+
 
     // Rutas para crear, actualizar y eliminar
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
