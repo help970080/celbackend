@@ -14,7 +14,7 @@ const initSalePaymentRoutes = (models) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
 
-    // RUTA GET / CORREGIDA: Obtiene la lista de ventas con todos los datos necesarios.
+    // RUTA GET / CORREGIDA: Obtiene la lista de ventas con todos los datos relacionados.
     router.get('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -55,12 +55,12 @@ const initSalePaymentRoutes = (models) => {
                 sales: rows
             });
         } catch (error) {
-            console.error('Error al obtener ventas:', error);
-            res.status(500).json({ message: 'Error interno del servidor al obtener ventas.' });
+            console.error('Error al obtener la lista de ventas:', error);
+            res.status(500).json({ message: "Error interno del servidor al obtener ventas." });
         }
     });
 
-    // --- RESTO DE TUS RUTAS ORIGINALES Y FUNCIONALES ---
+    // --- RESTO DE TUS RUTAS ORIGINALES ---
 
     router.get('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
@@ -71,32 +71,51 @@ const initSalePaymentRoutes = (models) => {
                     { model: Payment, as: 'payments' }
                 ]
             });
-            if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
+            if (!sale) {
+                return res.status(404).json({ message: 'Venta no encontrada.' });
+            }
             res.json(sale);
         } catch (error) {
             console.error('Error al obtener venta por ID:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
+            res.status(500).json({ message: 'Error interno del servidor al obtener venta.' });
         }
     });
 
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, interestRate, numberOfPayments } = req.body;
+        
         if (!clientId || !saleItems || saleItems.length === 0) {
-            return res.status(400).json({ message: 'Faltan datos obligatorios.' });
+            return res.status(400).json({ message: 'Faltan datos obligatorios para la venta (cliente, productos).' });
         }
-        const t = await sequelize.transaction();
+        
+        // Se ha mejorado el manejo de transacciones para asegurar la integridad de los datos
+        const t = await Sale.sequelize.transaction();
+
         try {
             const clientExists = await Client.findByPk(clientId, { transaction: t });
-            if (!clientExists) throw new Error('Cliente no encontrado.');
+            if (!clientExists) {
+                throw new Error(`Cliente con ID ${clientId} no encontrado.`);
+            }
 
             let totalAmountCalculated = 0;
+            const saleItemsData = [];
+
             for (const item of saleItems) {
                 const product = await Product.findByPk(item.productId, { transaction: t, lock: t.LOCK.UPDATE });
                 if (!product) throw new Error(`Producto con ID ${item.productId} no encontrado.`);
                 if (product.stock < item.quantity) throw new Error(`Stock insuficiente para ${product.name}.`);
-                totalAmountCalculated += product.price * item.quantity;
+                
+                const priceForThisItem = item.priceAtSale !== undefined ? item.priceAtSale : product.price;
+                totalAmountCalculated += priceForThisItem * item.quantity;
+                
                 product.stock -= item.quantity;
                 await product.save({ transaction: t });
+
+                saleItemsData.push({
+                    productId: item.productId,
+                    quantity: item.quantity,
+                    priceAtSale: priceForThisItem
+                });
             }
 
             let saleData = {
@@ -107,37 +126,35 @@ const initSalePaymentRoutes = (models) => {
             };
 
             if (isCredit) {
-                if (parseInt(numberOfPayments, 10) !== 17) throw new Error('Para ventas a crédito, el número de pagos debe ser 17.');
                 const dp = parseFloat(downPayment || 0);
-                if (dp < 0 || dp > totalAmountCalculated) throw new Error('El monto del enganche es inválido.');
+                if (parseInt(numberOfPayments, 10) !== 17) throw new Error('Para ventas a crédito, el número de pagos debe ser 17.');
+                if (dp < 0 || dp > totalAmountCalculated) throw new Error('El enganche es inválido.');
 
                 const balance = totalAmountCalculated - dp;
-                saleData.downPayment = dp;
-                saleData.interestRate = interestRate || 0;
-                saleData.numberOfPayments = 17;
-                saleData.weeklyPaymentAmount = parseFloat((balance / 17).toFixed(2));
-                saleData.balanceDue = parseFloat(balance.toFixed(2));
+                saleData = { ...saleData,
+                    downPayment: dp,
+                    interestRate: interestRate || 0,
+                    numberOfPayments: 17,
+                    weeklyPaymentAmount: parseFloat((balance / 17).toFixed(2)),
+                    balanceDue: parseFloat(balance.toFixed(2))
+                };
             } else {
-                saleData.balanceDue = 0;
-                saleData.downPayment = totalAmountCalculated;
+                saleData = { ...saleData, balanceDue: 0, downPayment: totalAmountCalculated };
             }
 
             const newSale = await Sale.create(saleData, { transaction: t });
-            const saleItemsToCreate = saleItems.map(item => ({
-                saleId: newSale.id,
-                productId: item.productId,
-                quantity: item.quantity,
-                priceAtSale: (models.Product.findByPk(item.productId))?.price || 0 // Re-fetch price for safety
-            }));
-            await SaleItem.bulkCreate(saleItemsToCreate, { transaction: t });
+
+            await SaleItem.bulkCreate(saleItemsData.map(item => ({ ...item, saleId: newSale.id })), { transaction: t });
             
             await t.commit();
-            const fullNewSale = await Sale.findByPk(newSale.id, { include: ['client', 'saleItems'] });
+            
+            const fullNewSale = await Sale.findByPk(newSale.id, { include: ['client', 'saleItems', 'payments'] });
             res.status(201).json(fullNewSale);
+
         } catch (error) {
             await t.rollback();
             console.error('Error al crear venta:', error);
-            res.status(500).json({ message: error.message || 'Error interno del servidor.' });
+            res.status(500).json({ message: error.message || 'Error interno del servidor al crear venta.' });
         }
     });
 
@@ -146,7 +163,7 @@ const initSalePaymentRoutes = (models) => {
     });
 
     router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
-        const t = await sequelize.transaction();
+        const t = await Sale.sequelize.transaction();
         try {
             const sale = await Sale.findByPk(req.params.id, { include: [{ model: SaleItem, as: 'saleItems' }], transaction: t });
             if (!sale) throw new Error('Venta no encontrada.');
@@ -166,7 +183,7 @@ const initSalePaymentRoutes = (models) => {
     router.post('/:saleId/payments', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
-        const t = await sequelize.transaction();
+        const t = await Sale.sequelize.transaction();
         try {
             const sale = await Sale.findByPk(saleId, { transaction: t, lock: t.LOCK.UPDATE });
             if (!sale) throw new Error('Venta no encontrada.');
@@ -177,7 +194,7 @@ const initSalePaymentRoutes = (models) => {
                 throw new Error('El monto del pago es inválido.');
             }
             
-            await Payment.create({ saleId, amount: paymentAmount, paymentMethod, notes }, { transaction: t });
+            const newPayment = await Payment.create({ saleId, amount: paymentAmount, paymentMethod, notes }, { transaction: t });
             sale.balanceDue = parseFloat((sale.balanceDue - paymentAmount).toFixed(2));
             if (sale.balanceDue <= 0) {
                 sale.status = 'paid_off';
@@ -185,7 +202,7 @@ const initSalePaymentRoutes = (models) => {
             }
             await sale.save({ transaction: t });
             await t.commit();
-            res.status(201).json(sale);
+            res.status(201).json(newPayment);
         } catch (error) {
             await t.rollback();
             console.error('Error al registrar pago:', error);
