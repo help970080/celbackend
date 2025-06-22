@@ -1,16 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
-const authorizeRoles = require('../middleware/roleMiddleware'); // <-- Importar el nuevo middleware
+const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op } = require('sequelize');
+const ExcelJS = require('exceljs'); // <-- AÑADIDO: Importación de ExcelJS
 
 let Product;
 
 const initProductRoutes = (models) => {
     Product = models.Product;
 
-    // Rutas públicas (no requieren autenticación)
-    router.get('/', async (req, res) => { // Listar productos (catálogo y búsquedas)
+    // Ruta para listar productos (catálogo y búsquedas)
+    router.get('/', async (req, res) => {
         try {
             const { sortBy, order, category, search, page, limit } = req.query;
             const options = {};
@@ -63,7 +64,8 @@ const initProductRoutes = (models) => {
         }
     });
 
-    router.get('/:id', async (req, res) => { // Obtener producto por ID
+    // Ruta para obtener producto por ID
+    router.get('/:id', async (req, res) => {
         try {
             const product = await Product.findByPk(req.params.id);
             if (!product) {
@@ -76,13 +78,63 @@ const initProductRoutes = (models) => {
         }
     });
 
+    // NUEVA RUTA: Exportar productos a Excel
+    router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
+        try {
+            const productsToExport = await Product.findAll({
+                order: [['name', 'ASC']]
+            });
+
+            const workbook = new ExcelJS.Workbook();
+            const worksheet = workbook.addWorksheet('Reporte de Inventario');
+
+            // Definir columnas y encabezados
+            worksheet.columns = [
+                { header: 'ID Producto', key: 'productId', width: 15 },
+                { header: 'Nombre', key: 'name', width: 30 },
+                { header: 'Descripción', key: 'description', width: 40 },
+                { header: 'Precio ($)', key: 'price', width: 15, style: { numFmt: '#,##0.00' } },
+                { header: 'Stock Actual', key: 'stock', width: 15 },
+                { header: 'Categoría', key: 'category', width: 20 },
+                { header: 'Marca', key: 'brand', width: 20 },
+                { header: 'Fecha Creación', key: 'createdAt', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } },
+                { header: 'Última Actualización', key: 'updatedAt', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } }
+            ];
+
+            // Añadir filas de datos
+            productsToExport.forEach(product => {
+                worksheet.addRow({
+                    productId: product.id,
+                    name: product.name,
+                    description: product.description,
+                    price: product.price,
+                    stock: product.stock,
+                    category: product.category,
+                    brand: product.brand,
+                    createdAt: product.createdAt, // ExcelJS maneja objetos Date correctamente
+                    updatedAt: product.updatedAt
+                });
+            });
+
+            // Configurar cabeceras de la respuesta para la descarga del archivo
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', 'attachment; filename=inventario_productos.xlsx');
+
+            // Escribir el libro de trabajo en el stream de respuesta
+            await workbook.xlsx.write(res);
+            res.end();
+
+        } catch (error) {
+            console.error('CRITICAL ERROR al exportar inventario a Excel (Backend):', error);
+            res.status(500).json({ message: 'Error interno del servidor al exportar inventario. Por favor, revisa los logs del servidor para más detalles.', error: error.message });
+        }
+    });
+
     // Rutas protegidas (requieren autenticación Y rol específico)
-    // Solo super_admin y regular_admin pueden crear/actualizar/eliminar productos inicialmente
-    // Podemos ajustar los roles según tus necesidades exactas
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
-            
+
             if (!Array.isArray(imageUrls) || !imageUrls.every(url => typeof url === 'string')) {
                 return res.status(400).json({ message: 'imageUrls debe ser un arreglo de URLs (strings).' });
             }
@@ -105,7 +157,7 @@ const initProductRoutes = (models) => {
     router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
-            
+
             if (!Array.isArray(imageUrls) || !imageUrls.every(url => typeof url === 'string')) {
                 return res.status(400).json({ message: 'imageUrls debe ser un arreglo de URLs (strings).' });
             }
@@ -131,7 +183,7 @@ const initProductRoutes = (models) => {
         }
     });
 
-    router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => { // Solo super_admin puede eliminar
+    router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const deletedRows = await Product.destroy({
                 where: { id: req.params.id }
