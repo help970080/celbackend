@@ -1,3 +1,4 @@
+// VERSIÓN FINAL Y ROBUSTA: Previene errores por datos nulos o inesperados.
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
@@ -10,43 +11,31 @@ let Product;
 const initProductRoutes = (models) => {
     Product = models.Product;
 
-    // Ruta para listar productos (catálogo y búsquedas)
+    // Ruta para listar productos con paginación y búsqueda
     router.get('/', async (req, res) => {
         try {
-            const { sortBy, order, category, search, page, limit } = req.query;
-            const options = {};
-            const whereClause = {};
+            const { sortBy = 'createdAt', order = 'DESC', category, search, page = 1, limit = 10 } = req.query;
+            const options = { where: {}, order: [] };
 
-            if (category) {
-                whereClause.category = category;
-            }
-
+            if (category) options.where.category = category;
             if (search) {
-                whereClause[Op.or] = [
-                    { name: { [Op.like]: `%${search}%` } },
-                    { description: { [Op.like]: `%${search}%` } },
-                    { category: { [Op.like]: `%${search}%` } },
-                    { brand: { [Op.like]: `%${search}%` } }
+                options.where[Op.or] = [
+                    { name: { [Op.iLike]: `%${search}%` } },
+                    { description: { [Op.iLike]: `%${search}%` } },
+                    { category: { [Op.iLike]: `%${search}%` } },
+                    { brand: { [Op.iLike]: `%${search}%` } }
                 ];
             }
 
-            if (sortBy) {
-                const validSortBy = ['name', 'price', 'createdAt'];
-                const sortOrder = (order && (order.toLowerCase() === 'asc' || order.toLowerCase() === 'desc')) ? order.toLowerCase() : 'asc';
-                if (validSortBy.includes(sortBy)) {
-                    options.order = [[sortBy, sortOrder.toUpperCase()]];
-                }
-            } else {
-                options.order = [['createdAt', 'DESC']];
+            const validSortBy = ['name', 'price', 'createdAt'];
+            if (validSortBy.includes(sortBy)) {
+                options.order.push([sortBy, order.toUpperCase() === 'DESC' ? 'DESC' : 'ASC']);
             }
 
-            const pageNum = parseInt(page, 10) || 1;
-            const limitNum = parseInt(limit, 10) || 10;
-            const offset = (pageNum - 1) * limitNum;
-
-            options.where = whereClause;
+            const pageNum = parseInt(page, 10);
+            const limitNum = parseInt(limit, 10);
             options.limit = limitNum;
-            options.offset = offset;
+            options.offset = (pageNum - 1) * limitNum;
 
             const { count, rows } = await Product.findAndCountAll(options);
 
@@ -57,71 +46,90 @@ const initProductRoutes = (models) => {
                 products: rows
             });
         } catch (error) {
-            console.error('Error al obtener productos con paginación:', error);
+            console.error('Error al obtener productos:', error);
             res.status(500).json({ message: 'Error interno del servidor al obtener productos.' });
         }
     });
 
-    // Ruta para obtener producto por ID
+    // Ruta para obtener un producto por su ID
     router.get('/:id', async (req, res) => {
         try {
             const product = await Product.findByPk(req.params.id);
-            if (!product) {
-                return res.status(404).json({ message: 'Producto no encontrado.' });
-            }
+            if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
             res.json(product);
         } catch (error) {
             console.error('Error al obtener producto por ID:', error);
-            res.status(500).json({ message: 'Error interno del servidor al obtener producto.' });
+            res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
-    // PRUEBA FINAL DE DIAGNÓSTICO: Para confirmar que los logs de Render funcionan.
+    // RUTA PARA EXPORTAR A EXCEL - VERSIÓN FINAL "A PRUEBA DE BALAS"
     router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
-    
-        console.log('--- INICIANDO PRUEBA FINAL: Forzando un error deliberado. ---');
-        
         try {
-            // Forzamos un error con un mensaje único y fácil de buscar.
-            // Este error no usa la base de datos ni ExcelJS. Es un error puro.
-            throw new Error('ESTE_ES_UN_ERROR_DE_PRUEBA_DELIBERADO_12345');
-        
-        } catch (error) {
-            // Este bloque DEBE ejecutarse y registrar el error en Render.
-            console.error('--- PRUEBA FINAL CAPTURADA EN EL BACKEND ---:', error);
-            
-            res.status(500).json({ 
-                message: 'Prueba de error deliberado del servidor.', 
-                error: error.message 
+            const productsToExport = await Product.findAll({ order: [['name', 'ASC']] });
+            const workbook = new ExcelJS.Workbook();
+            const worksheet = workbook.addWorksheet('Reporte de Inventario');
+
+            worksheet.columns = [
+                { header: 'ID Producto', key: 'productId', width: 15 },
+                { header: 'Nombre', key: 'name', width: 35 },
+                { header: 'Descripción', key: 'description', width: 50 },
+                { header: 'Precio ($)', key: 'price', width: 15, style: { numFmt: '"$"#,##0.00' } },
+                { header: 'Stock', key: 'stock', width: 15, style: { numFmt: '0' } },
+                { header: 'Categoría', key: 'category', width: 25 },
+                { header: 'Marca', key: 'brand', width: 25 },
+                { header: 'Fecha Creación', key: 'createdAt', width: 22, style: { numFmt: 'dd/mm/yyyy hh:mm AM/PM' } },
+                { header: 'Última Actualización', key: 'updatedAt', width: 22, style: { numFmt: 'dd/mm/yyyy hh:mm AM/PM' } }
+            ];
+
+            // Bucle de validación para asegurar que datos nulos o incorrectos no rompan la exportación
+            productsToExport.forEach(product => {
+                worksheet.addRow({
+                    productId: product.id,
+                    name: product.name || 'Sin Nombre',
+                    description: product.description || '',
+                    price: typeof product.price === 'number' ? product.price : 0.00,
+                    stock: typeof product.stock === 'number' ? product.stock : 0,
+                    category: product.category || 'Sin Categoría',
+                    brand: product.brand || 'Sin Marca',
+                    createdAt: product.createdAt instanceof Date ? product.createdAt : null,
+                    updatedAt: product.updatedAt instanceof Date ? product.updatedAt : null
+                });
             });
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', 'attachment; filename=Reporte_Inventario.xlsx');
+
+            await workbook.xlsx.write(res);
+            res.end();
+
+        } catch (error) {
+            // Este log es la única forma de ver el error real si todo lo demás falla
+            console.error('CRITICAL ERROR al exportar inventario a Excel (Backend):', error);
+            res.status(500).json({ message: 'Error interno del servidor al generar el reporte Excel.', error: error.message });
         }
     });
 
-
-    // Rutas para crear, actualizar y eliminar
+    // Rutas para crear, actualizar y eliminar productos
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
-            const { name, description, price, stock, imageUrls, category, brand } = req.body;
-            const finalImageUrls = Array.isArray(imageUrls) ? imageUrls : [];
-            const newProduct = await Product.create({ name, description, price, stock, imageUrls: finalImageUrls, category, brand });
+            const newProduct = await Product.create(req.body);
             res.status(201).json(newProduct);
         } catch (error) {
             console.error('Error al crear producto:', error);
-            res.status(500).json({ message: 'Error interno del servidor al crear producto.' });
+            res.status(500).json({ message: 'Error al crear producto.' });
         }
     });
 
     router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
         try {
-            const { name, description, price, stock, imageUrls, category, brand } = req.body;
-            const finalImageUrls = Array.isArray(imageUrls) ? imageUrls : [];
-            const [updatedRows] = await Product.update({ name, description, price, stock, imageUrls: finalImageUrls, category, brand }, { where: { id: req.params.id } });
+            const [updatedRows] = await Product.update(req.body, { where: { id: req.params.id } });
             if (updatedRows === 0) return res.status(404).json({ message: 'Producto no encontrado.' });
             const updatedProduct = await Product.findByPk(req.params.id);
             res.json(updatedProduct);
         } catch (error) {
             console.error('Error al actualizar producto:', error);
-            res.status(500).json({ message: 'Error interno del servidor al actualizar producto.' });
+            res.status(500).json({ message: 'Error al actualizar producto.' });
         }
     });
 
@@ -132,7 +140,7 @@ const initProductRoutes = (models) => {
             res.status(204).send();
         } catch (error) {
             console.error('Error al eliminar producto:', error);
-            res.status(500).json({ message: 'Error interno del servidor al eliminar producto.' });
+            res.status(500).json({ message: 'Error al eliminar producto.' });
         }
     });
 
