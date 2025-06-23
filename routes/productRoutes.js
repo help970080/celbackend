@@ -1,4 +1,4 @@
-// VERSIÓN FINAL CON RUTA DE DIAGNÓSTICO DE VERSIÓN
+// VERSIÓN COMPLETA Y CORREGIDA
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
@@ -21,7 +21,7 @@ const initProductRoutes = (models) => {
     });
     // --- FIN DE LA RUTA DE PRUEBA ---
 
-    // Ruta para listar productos con paginación y búsqueda
+    // Ruta para listar productos con paginación y búsqueda (PÚBLICA)
     router.get('/', async (req, res) => {
         try {
             const { sortBy = 'createdAt', order = 'DESC', category, search, page = 1, limit = 10 } = req.query;
@@ -94,7 +94,79 @@ const initProductRoutes = (models) => {
         }
     });
     
-    // ... aquí irían el resto de tus rutas (POST, PUT, DELETE, etc.) ...
+    // --- INICIO DE LAS RUTAS CORREGIDAS Y AGREGADAS ---
+
+    // RUTA PARA CREAR UN NUEVO PRODUCTO (POST)
+    router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
+        try {
+            const { name, description, price, stock, imageUrls, category, brand } = req.body;
+            // Validación básica
+            if (!name || !price || !stock) {
+                return res.status(400).json({ message: 'Nombre, precio y stock son campos obligatorios.' });
+            }
+            const newProduct = await Product.create({
+                name,
+                description,
+                price,
+                stock,
+                imageUrls,
+                category,
+                brand
+            });
+            res.status(201).json(newProduct);
+        } catch (error) {
+            console.error('Error al crear producto:', error);
+            res.status(500).json({ message: 'Error interno del servidor al crear el producto.' });
+        }
+    });
+
+    // RUTA PARA ACTUALIZAR UN PRODUCTO (PUT)
+    router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { name, description, price, stock, imageUrls, category, brand } = req.body;
+            
+            const [updatedRows] = await Product.update({
+                name,
+                description,
+                price,
+                stock,
+                imageUrls,
+                category,
+                brand
+            }, {
+                where: { id: id }
+            });
+
+            if (updatedRows === 0) {
+                return res.status(404).json({ message: 'Producto no encontrado o no se realizaron cambios.' });
+            }
+            const updatedProduct = await Product.findByPk(id);
+            res.json(updatedProduct);
+        } catch (error) {
+            console.error('Error al actualizar producto:', error);
+            res.status(500).json({ message: 'Error interno del servidor al actualizar el producto.' });
+        }
+    });
+
+    // RUTA PARA ELIMINAR UN PRODUCTO (DELETE)
+    router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
+        try {
+            const { id } = req.params;
+            const deletedRows = await Product.destroy({
+                where: { id: id }
+            });
+            if (deletedRows === 0) {
+                return res.status(404).json({ message: 'Producto no encontrado.' });
+            }
+            res.status(204).send(); // 204 No Content es la respuesta estándar para un DELETE exitoso
+        } catch (error) {
+            console.error('Error al eliminar producto:', error);
+            res.status(500).json({ message: 'Error interno del servidor al eliminar el producto.' });
+        }
+    });
+
+    // --- FIN DE LAS RUTAS CORREGIDAS Y AGREGADAS ---
 
     return router;
 };
