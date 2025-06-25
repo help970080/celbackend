@@ -7,9 +7,19 @@ module.exports = (sequelize) => {
             type: DataTypes.INTEGER,
             allowNull: false,
             references: {
-                model: 'Clients', // <-- CORRECCIÓN: Apuntando a la tabla correcta con mayúscula
+                model: 'Clientes', // Apuntando al nombre de tabla corregido
                 key: 'id'
             }
+        },
+        assignedCollectorId: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            references: {
+                model: 'Usuarios', // Apuntando al nombre de tabla corregido
+                key: 'id'
+            },
+            onUpdate: 'CASCADE',
+            onDelete: 'SET NULL'
         },
         saleDate: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
         totalAmount: { type: DataTypes.FLOAT, allowNull: false },
@@ -21,20 +31,9 @@ module.exports = (sequelize) => {
         weeklyPaymentAmount: { type: DataTypes.FLOAT, allowNull: true },
         balanceDue: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
         status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'completed' },
-        assignedCollectorId: {
-            type: DataTypes.INTEGER,
-            allowNull: true,
-            references: {
-                model: 'Users', // <-- CORRECCIÓN: Apuntando a la tabla correcta con mayúscula
-                key: 'id'
-            },
-            onUpdate: 'CASCADE',
-            onDelete: 'SET NULL'
-        },
     }, {
         tableName: 'sales',
         timestamps: true
     });
-
     return Sale;
 };
