@@ -24,7 +24,7 @@ sequelize.authenticate()
         // --- CAMBIO CLAVE PARA EL REINICIO ---
         // force: true BORRARÁ TODAS TUS TABLAS y las creará de nuevo desde cero.
         console.log('⚠️ INICIANDO SINCRONIZACIÓN CON { force: true }. ESTO BORRARÁ LOS DATOS.');
-        return sequelize.sync({ force: true }); 
+        return sequelize.sync({ force: false });
     })
     .then(async () => {
         console.log('✅ BASE DE DATOS REINICIADA Y MODELOS SINCRONIZADOS.');
