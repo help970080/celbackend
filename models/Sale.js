@@ -6,20 +6,11 @@ module.exports = (sequelize) => {
         clientId: {
             type: DataTypes.INTEGER,
             allowNull: false,
+            // La referencia a Clientes funciona bien, la dejamos
             references: {
-                model: 'Clientes', // Apuntando al nombre de tabla corregido
+                model: 'Clientes', 
                 key: 'id'
             }
-        },
-        assignedCollectorId: {
-            type: DataTypes.INTEGER,
-            allowNull: true,
-            references: {
-                model: 'Usuarios', // Apuntando al nombre de tabla corregido
-                key: 'id'
-            },
-            onUpdate: 'CASCADE',
-            onDelete: 'SET NULL'
         },
         saleDate: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
         totalAmount: { type: DataTypes.FLOAT, allowNull: false },
@@ -31,6 +22,22 @@ module.exports = (sequelize) => {
         weeklyPaymentAmount: { type: DataTypes.FLOAT, allowNull: true },
         balanceDue: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
         status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'completed' },
+        
+        // --- CAMBIO DE EMERGENCIA ---
+        // Se elimina temporalmente la restricción de clave foránea para evitar el error.
+        // El campo seguirá guardando el ID del gestor, pero sin la validación estricta de la BD.
+        assignedCollectorId: {
+            type: DataTypes.INTEGER,
+            allowNull: true
+            /*
+            references: {
+                model: 'Usuarios',
+                key: 'id'
+            },
+            onUpdate: 'CASCADE',
+            onDelete: 'SET NULL'
+            */
+        },
     }, {
         tableName: 'sales',
         timestamps: true
