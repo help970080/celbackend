@@ -1,4 +1,3 @@
-// models/index.js (Versión Final)
 const UserModel = require('./User');
 const ClientModel = require('./Client');
 const ProductModel = require('./Product');
