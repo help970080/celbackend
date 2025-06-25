@@ -8,6 +8,16 @@ module.exports = (sequelize) => {
             autoIncrement: true,
             allowNull: false
         },
+        // --- CORRECCIÓN IMPORTANTE AÑADIDA ---
+        // Este campo es esencial para saber a qué cliente pertenece la venta.
+        clientId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            references: {
+                model: 'Clients', // Asegúrate que el nombre de tu tabla de Clientes sea 'Clients'
+                key: 'id'
+            }
+        },
         saleDate: {
             type: DataTypes.DATE,
             allowNull: false,
@@ -54,7 +64,18 @@ module.exports = (sequelize) => {
             type: DataTypes.STRING,
             allowNull: false,
             defaultValue: 'completed'
-        }
+        },
+        // --- CAMPO NUEVO PARA GESTIÓN DE COBRANZA ---
+        assignedCollectorId: {
+            type: DataTypes.INTEGER,
+            allowNull: true, // Puede ser nulo si la venta no está asignada
+            references: {
+                model: 'Users', // Nombre de la tabla de Usuarios
+                key: 'id'
+            },
+            onUpdate: 'CASCADE',
+            onDelete: 'SET NULL' // Si se elimina el gestor, la venta queda sin asignar
+        },
     }, {
         tableName: 'sales',
         timestamps: true

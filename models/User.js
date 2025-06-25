@@ -1,6 +1,6 @@
-// src/backend/models/User.js (o donde definas tu modelo User)
+// src/backend/models/User.js (Archivo Corregido y Actualizado)
 const { DataTypes } = require('sequelize');
-const bcrypt = require('bcryptjs'); // Asegúrate de que bcryptjs esté importado
+const bcrypt = require('bcryptjs');
 
 module.exports = (sequelize) => {
     const User = sequelize.define('User', {
@@ -18,14 +18,22 @@ module.exports = (sequelize) => {
             type: DataTypes.STRING,
             allowNull: false,
         },
-        // --- NUEVO CAMPO: Role ---
+        // --- CAMPO ROLE MODIFICADO ---
         role: {
-            type: DataTypes.STRING, // Puedes usar DataTypes.ENUM(['super_admin', 'admin_ventas', 'admin_inventario']) para roles fijos
+            // Se cambia a ENUM para mayor integridad de datos
+            type: DataTypes.ENUM(
+                'super_admin', 
+                'regular_admin', 
+                'sales_admin', 
+                'inventory_admin', 
+                'viewer_reports', 
+                'collector_agent' // <-- ROL AÑADIDO
+            ),
             allowNull: false,
-            defaultValue: 'regular_admin', // Rol por defecto. Lo cambiaremos a 'super_admin' para el primer usuario.
+            // Se quita el defaultValue para asignar roles explícitamente
         },
     }, {
-        timestamps: true, // `createdAt` and `updatedAt` will be automatically added
+        timestamps: true,
         hooks: {
             beforeCreate: async (user) => {
                 if (user.password) {
@@ -34,7 +42,7 @@ module.exports = (sequelize) => {
                 }
             },
             beforeUpdate: async (user) => {
-                if (user.changed('password')) { // Solo hashear si la contraseña ha cambiado
+                if (user.changed('password')) {
                     const salt = await bcrypt.genSalt(10);
                     user.password = await bcrypt.hash(user.password, salt);
                 }
