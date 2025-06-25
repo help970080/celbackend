@@ -1,71 +1,47 @@
+// routes/authRoutes.js (Versión Final)
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 let User;
-
 const JWT_SECRET = process.env.JWT_SECRET;
 
-const initAuthRoutes = (models, isRegistrationAllowedExternally) => { 
+const initAuthRoutes = (models, isRegistrationAllowed) => { 
     User = models.User;
 
+    router.get('/is-registration-allowed', (req, res) => {
+        res.json({ isRegistrationAllowed: isRegistrationAllowed });
+    });
+
     router.post('/register', async (req, res) => {
-        // Si el registro no está permitido (porque ya hay administradores), denegar
-        if (!isRegistrationAllowedExternally) {
-            console.warn('Intento de registro de administrador cuando ya hay uno existente.');
+        if (!isRegistrationAllowed) {
             return res.status(403).json({ message: 'El registro de nuevos administradores está deshabilitado.' });
         }
-
-        console.log('DEBUG (Register): req.body recibido:', req.body);
         const { username, password } = req.body;
         try {
-            if (!username || !password) {
-                return res.status(400).json({ message: 'Nombre de usuario y contraseña son obligatorios.' });
-            }
-
-            // Antes de crear el usuario, verificar si es el primer usuario que se registra
             const existingUserCount = await User.count();
-            const roleToAssign = (existingUserCount === 0) ? 'super_admin' : 'regular_admin'; // Asignar 'super_admin' al primero
-
+            const roleToAssign = (existingUserCount === 0) ? 'super_admin' : 'regular_admin';
             const newUser = await User.create({ username, password, role: roleToAssign });
-            res.status(201).json({ message: 'Usuario registrado exitosamente.', userId: newUser.id, username: newUser.username, role: newUser.role });
+            res.status(201).json({ message: 'Usuario registrado.', userId: newUser.id });
         } catch (error) {
-            console.error('ERROR (Register): Error al registrar usuario:', error);
-            if (error.name === 'SequelizeUniqueConstraintError') {
-                return res.status(409).json({ message: 'El nombre de usuario ya existe.' });
-            }
-            if (error.name === 'SequelizeValidationError') {
-                return res.status(400).json({ message: error.errors[0].message });
-            }
-            res.status(500).json({ message: 'Error interno del servidor al registrar usuario.' });
+            res.status(500).json({ message: 'Error al registrar usuario.' });
         }
     });
 
     router.post('/login', async (req, res) => {
-        console.log('DEBUG (Login): req.body recibido:', req.body);
         const { username, password } = req.body;
         try {
-            if (!username || !password) {
-                return res.status(400).json({ message: 'Nombre de usuario y contraseña son obligatorios.' });
-            }
             const user = await User.findOne({ where: { username } });
-            if (!user) {
-                return res.status(401).json({ message: 'Credenciales inválidas.' });
-            }
+            if (!user) return res.status(401).json({ message: 'Credenciales inválidas.' });
+            
             const isMatch = await user.comparePassword(password);
-            if (!isMatch) {
-                return res.status(401).json({ message: 'Credenciales inválidas.' });
-            }
-            const token = jwt.sign(
-                { userId: user.id, username: user.username, role: user.role }, // <-- ¡Añadir el rol al token!
-                JWT_SECRET,
-                { expiresIn: '1h' }
-            );
-            res.json({ message: 'Login exitoso.', token, username: user.username, role: user.role }); // <-- ¡Devolver el rol en el login!
+            if (!isMatch) return res.status(401).json({ message: 'Credenciales inválidas.' });
+            
+            const token = jwt.sign({ userId: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+            res.json({ message: 'Login exitoso.', token, username: user.username, role: user.role });
         } catch (error) {
-            console.error('ERROR (Login): Error al iniciar sesión:', error);
-            res.status(500).json({ message: 'Error interno del servidor al iniciar sesión.' });
+            res.status(500).json({ message: 'Error al iniciar sesión.' });
         }
     });
 

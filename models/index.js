@@ -1,3 +1,4 @@
+// models/index.js (Versión Final)
 const UserModel = require('./User');
 const ClientModel = require('./Client');
 const ProductModel = require('./Product');
@@ -14,7 +15,6 @@ module.exports = (sequelize) => {
     const SaleItem = SaleItemModel(sequelize);
 
     // --- ASOCIACIONES DEFINITIVAS ---
-
     Sale.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
     Client.hasMany(Sale, { foreignKey: 'clientId', as: 'sales' });
 
