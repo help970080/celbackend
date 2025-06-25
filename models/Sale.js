@@ -8,13 +8,12 @@ module.exports = (sequelize) => {
             autoIncrement: true,
             allowNull: false
         },
-        // --- CORRECCIÓN IMPORTANTE AÑADIDA ---
-        // Este campo es esencial para saber a qué cliente pertenece la venta.
+        // --- CAMPO ESENCIAL AÑADIDO ---
         clientId: {
             type: DataTypes.INTEGER,
             allowNull: false,
             references: {
-                model: 'Clients', // Asegúrate que el nombre de tu tabla de Clientes sea 'Clients'
+                model: 'clients', // Referencia explícita a la tabla 'clients'
                 key: 'id'
             }
         },
@@ -51,7 +50,7 @@ module.exports = (sequelize) => {
             type: DataTypes.INTEGER,
             allowNull: true
         },
-        weeklyPaymentAmount: { // Campo para el pago semanal calculado
+        weeklyPaymentAmount: {
             type: DataTypes.FLOAT,
             allowNull: true
         },
@@ -65,19 +64,19 @@ module.exports = (sequelize) => {
             allowNull: false,
             defaultValue: 'completed'
         },
-        // --- CAMPO NUEVO PARA GESTIÓN DE COBRANZA ---
+        // --- CAMPO NUEVO PARA GESTIÓN DE COBRANZA AÑADIDO ---
         assignedCollectorId: {
             type: DataTypes.INTEGER,
-            allowNull: true, // Puede ser nulo si la venta no está asignada
+            allowNull: true,
             references: {
-                model: 'Users', // Nombre de la tabla de Usuarios
+                model: 'users', // Referencia explícita a la tabla 'users'
                 key: 'id'
             },
             onUpdate: 'CASCADE',
-            onDelete: 'SET NULL' // Si se elimina el gestor, la venta queda sin asignar
+            onDelete: 'SET NULL'
         },
     }, {
-        tableName: 'sales',
+        tableName: 'sales', // Nombre de tabla explícito
         timestamps: true
     });
 

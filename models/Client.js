@@ -30,32 +30,27 @@ module.exports = (sequelize) => {
             }
         },
         address: {
-            type: DataTypes.STRING,
-            allowNull: false
+            type: DataTypes.STRING
         },
         city: {
-            type: DataTypes.STRING,
-            allowNull: true
+            type: DataTypes.STRING
         },
         state: {
-            type: DataTypes.STRING,
-            allowNull: true
+            type: DataTypes.STRING
         },
         zipCode: {
-            type: DataTypes.STRING,
-            allowNull: true
+            type: DataTypes.STRING
         },
         identificationId: {
-            type: DataTypes.STRING,
-            allowNull: true,
-            unique: true
+            type: DataTypes.STRING
         },
         notes: {
-            type: DataTypes.TEXT,
-            allowNull: true
+            type: DataTypes.TEXT
         }
     }, {
-        tableName: 'clients',
+        // --- MODIFICACIÓN CLAVE ---
+        // Se define explícitamente el nombre de la tabla para evitar errores.
+        tableName: 'clients', 
         timestamps: true
     });
 
