@@ -1,5 +1,5 @@
 const express = require('express');
-const { Sequelize, DataTypes } = require('sequelize');
+const { Sequelize } = require('sequelize'); // No es necesario DataTypes aquí
 const cors = require('cors');
 const authMiddleware = require('./middleware/authMiddleware');
 
@@ -7,33 +7,34 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET;
 
-// --- CAMBIO CLAVE AQUÍ: Configuración de Sequelize para PostgreSQL ---
 const sequelize = new Sequelize(process.env.DATABASE_URL, {
-    dialect: 'postgres', // Especifica el dialecto como PostgreSQL
+    dialect: 'postgres',
     protocol: 'postgres',
     dialectOptions: {
         ssl: {
-            require: true, // Requerir SSL
-            rejectUnauthorized: false // Importante para Render, si no usas un certificado específico
+            require: true,
+            rejectUnauthorized: false
         }
     },
-    logging: false // Deshabilita el logging de SQL para producción
+    logging: false
 });
-// --- FIN DEL CAMBIO ---
 
+// Inicializa los modelos y sus asociaciones
 const models = require('./models')(sequelize);
 
 let isRegistrationAllowed = false; 
 
 sequelize.authenticate()
     .then(() => {
-        console.log('✅ Conexión exitosa a la base de datos (PostgreSQL).'); // Mensaje actualizado
-        // En producción, no uses {force: true}. Usa {alter: true} con precaución
-        // para aplicar pequeños cambios de esquema, o mejor aún, usa migraciones.
-        // Para la primera vez en un DB vacío, `force: false` intentará crear tablas si no existen.
-        return sequelize.sync({ force: false }); 
+        console.log('✅ Conexión exitosa a la base de datos (PostgreSQL).');
+        
+        // --- INICIO DE LA MODIFICACIÓN TEMPORAL ---
+        // Se cambia a { alter: true } para que Sequelize actualice la tabla 'sales'
+        // y añada la columna 'assignedCollectorId' que falta.
+        console.log('Sincronizando modelos con { alter: true }...');
+        return sequelize.sync({ alter: true }); 
+        // --- FIN DE LA MODIFICACIÓN TEMPORAL ---
     })
     .then(async () => {
         console.log('✅ Modelos sincronizados con la base de datos.');
@@ -47,41 +48,41 @@ sequelize.authenticate()
                 isRegistrationAllowed = false;
                 console.log(`🔒 Se encontraron ${adminCount} administradores. El registro está DESHABILITADO.`);
             }
-
         } catch (dbErr) {
             console.error('❌ Error al verificar administradores existentes:', dbErr);
             isRegistrationAllowed = false; 
         }
 
         app.use(express.json());
-        // --- CORS MÁS SEGURO PARA PRODUCCIÓN ---
+
         const allowedOrigins = [
-            'http://localhost:5173', // Para desarrollo local
-            process.env.FRONTEND_URL // <-- Variable de entorno para la URL de tu frontend en Render
+            'http://localhost:5173',
+            process.env.FRONTEND_URL
         ];
         app.use(cors({
             origin: function (origin, callback) {
                 if (!origin || allowedOrigins.indexOf(origin) !== -1) {
                     callback(null, true);
                 } else {
-                    const msg = `La política CORS para este sitio no permite acceso desde el origen especificado: ${origin}`;
-                    callback(new Error(msg), false);
+                    callback(new Error(`La política CORS no permite acceso desde: ${origin}`), false);
                 }
             }
         }));
-        // --- FIN CORS MÁS SEGURO ---
-
-        app.get('/api/auth/is-registration-allowed', (req, res) => {
-            if (isRegistrationAllowed) {
-                res.json({ isRegistrationAllowed: true });
-            } else {
-                res.json({ isRegistrationAllowed: false });
-            }
+        
+        // Middleware para registrar cada petición entrante (útil para depuración)
+        app.use((req, res, next) => {
+          console.log(`--> Petición Recibida: ${req.method} ${req.originalUrl}`);
+          next();
         });
 
+        app.get('/api/auth/is-registration-allowed', (req, res) => {
+            res.json({ isRegistrationAllowed });
+        });
+
+        // Montaje de rutas
         const initAuthRoutes = require('./routes/authRoutes');
         app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed)); 
-        console.log('✅ Rutas de autenticación montadas en /api/auth');
+        console.log('✅ Rutas de autenticación montadas.');
 
         const initProductRoutes = require('./routes/productRoutes');
         app.use('/api/products', initProductRoutes(models));
@@ -94,13 +95,10 @@ sequelize.authenticate()
 
         const initReportRoutes = require('./routes/reportRoutes');
         app.use('/api/reports', authMiddleware, initReportRoutes(models));
-        console.log('✅ Rutas de reportes montadas en /api/reports');
         
-        // --- NUEVO: Montar las rutas de gestión de usuarios ---
         const initUserRoutes = require('./routes/userRoutes');
-        app.use('/api/users', authMiddleware, initUserRoutes(models)); // Protegido por authMiddleware por defecto, y luego por roleMiddleware en userRoutes
-        console.log('✅ Rutas de gestión de usuarios montadas en /api/users');
-
+        app.use('/api/users', authMiddleware, initUserRoutes(models));
+        console.log('✅ Todas las rutas principales han sido montadas.');
 
         app.get('/', (req, res) => {
             res.send('🎉 ¡Servidor de CelExpress Pro funcionando correctamente!');
