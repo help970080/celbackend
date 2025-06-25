@@ -1,11 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
-const moment = require('moment-timezone');
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 
-let Sale, Client, Product, Payment, SaleItem, User; // Añadir User para validación opcional
+let Sale, Client, Product, Payment, SaleItem, User; // User es necesario aquí
 
 const initSalePaymentRoutes = (models) => {
     Sale = models.Sale;
@@ -13,26 +12,26 @@ const initSalePaymentRoutes = (models) => {
     Product = models.Product;
     Payment = models.Payment;
     SaleItem = models.SaleItem;
-    User = models.User; // Inicializar User
+    User = models.User; // Inicializamos el modelo User
 
-    // Ruta para obtener ventas con paginación y búsqueda
     router.get('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
             const whereClause = {};
-            // Incluimos el modelo User para poder mostrar el gestor asignado
+            
+            // --- LA CORRECCIÓN CLAVE ESTÁ AQUÍ ---
+            // Se añade el include para el modelo User con el alias correcto
             const includeClause = [
                 { model: Client, as: 'client' },
                 { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
-                { model: User, as: 'assignedCollector', attributes: ['id', 'username'] } // <-- Se añade esto
+                { model: User, as: 'assignedCollector', attributes: ['id', 'username'] }
             ];
 
             if (search) {
                 whereClause[Op.or] = [
-                    Sequelize.where(Sequelize.cast(Sequelize.col('Sale.id'), 'varchar'), { [Op.like]: `%${search}%` }),
+                    Sequelize.where(Sequelize.cast(Sequelize.col('Sale.id'), 'varchar'), { [Op.iLike]: `%${search}%` }),
                     { '$client.name$': { [Op.iLike]: `%${search}%` } },
                     { '$client.lastName$': { [Op.iLike]: `%${search}%` } },
-                    { '$saleItems.product.name$': { [Op.iLike]: `%${search}%` } }
                 ];
             }
 
@@ -46,7 +45,7 @@ const initSalePaymentRoutes = (models) => {
                 order: [['saleDate', 'DESC']],
                 limit: limitNum,
                 offset: offset,
-                distinct: true // Previene duplicados por los joins
+                distinct: true
             });
 
             res.json({
@@ -56,70 +55,37 @@ const initSalePaymentRoutes = (models) => {
                 sales: rows
             });
         } catch (error) {
-                console.error('Error al obtener ventas con búsqueda/paginación:', error);
-                res.status(500).json({ message: 'Error interno del servidor al obtener ventas.' });
+            console.error('Error al obtener ventas:', error);
+            res.status(500).json({ message: 'Error interno del servidor al obtener ventas.' });
         }
     });
 
-    // ... (El resto de tus rutas GET, POST, DELETE, etc. permanecen igual) ...
-    router.get('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => { /* ... tu código ... */ });
-    router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => { /* ... tu código ... */ });
-    router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => { /* ... tu código ... */ });
-    router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => { /* ... tu código ... */ });
-    router.post('/:saleId/payments', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => { /* ... tu código ... */ });
-    router.get('/:saleId/payments', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => { /* ... tu código ... */ });
-
-
-    // --- INICIO DEL CÓDIGO AÑADIDO ---
+    // ... (tus otras rutas como GET por ID, POST de venta, etc. van aquí) ...
     
-    // RUTA PARA ASIGNAR UNA VENTA A UN GESTOR DE COBRANZA
+    // RUTA PARA ASIGNAR UNA VENTA A UN GESTOR
     router.put('/:saleId/assign', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { saleId } = req.params;
         const { collectorId } = req.body;
 
         if (collectorId === undefined) {
-            return res.status(400).json({ message: 'Se requiere el ID del gestor de cobranza.' });
+            return res.status(400).json({ message: 'Se requiere el ID del gestor.' });
         }
 
         try {
             const sale = await Sale.findByPk(saleId);
-            if (!sale) {
-                return res.status(404).json({ message: 'Venta no encontrada.' });
-            }
-            if (!sale.isCredit) {
-                return res.status(400).json({ message: 'Solo se pueden asignar ventas que son a crédito.' });
-            }
-            
-            // Opcional pero recomendado: Verificar que el collectorId corresponde a un usuario con el rol correcto
-            if (collectorId !== null) {
-                const collector = await User.findOne({ where: { id: collectorId, role: 'collector_agent' } });
-                if (!collector) {
-                    return res.status(404).json({ message: 'Gestor de cobranza no encontrado o con rol incorrecto.' });
-                }
-            }
+            if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
+            if (!sale.isCredit) return res.status(400).json({ message: 'Solo se pueden asignar ventas a crédito.' });
 
-            sale.assignedCollectorId = collectorId === null ? null : parseInt(collectorId, 10);
+            sale.assignedCollectorId = collectorId === null || collectorId === "null" ? null : parseInt(collectorId, 10);
             await sale.save();
-
-            // Devolvemos la venta actualizada incluyendo los datos del gestor asignado
-            const updatedSale = await Sale.findByPk(saleId, {
-                include: [
-                    { model: Client, as: 'client' },
-                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
-                    { model: User, as: 'assignedCollector', attributes: ['id', 'username'] }
-                ]
-            });
-
-            res.json({ message: 'Gestor asignado a la venta con éxito.', sale: updatedSale });
-
+            
+            const updatedSale = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
+            res.json({ message: 'Gestor asignado con éxito.', sale: updatedSale });
         } catch (error) {
-            console.error('Error al asignar gestor a la venta:', error);
-            res.status(500).json({ message: 'Error interno del servidor al asignar el gestor.' });
+            console.error('Error al asignar gestor:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    // --- FIN DEL CÓDIGO AÑADIDO ---
-
 
     return router;
 };
