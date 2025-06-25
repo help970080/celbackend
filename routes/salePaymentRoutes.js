@@ -6,7 +6,7 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 
 let Sale, Client, Product, Payment, SaleItem, User;
 
-const initSalePaymentRoutes = (models, sequelize) => { // Recibe sequelize
+const initSalePaymentRoutes = (models, sequelize) => {
     Sale = models.Sale;
     Client = models.Client;
     Product = models.Product;
@@ -14,7 +14,7 @@ const initSalePaymentRoutes = (models, sequelize) => { // Recibe sequelize
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // Ruta GET /api/sales
+    // Ruta GET /api/sales para administradores
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -41,7 +41,7 @@ const initSalePaymentRoutes = (models, sequelize) => { // Recibe sequelize
         }
     });
 
-    // Ruta POST /api/sales
+    // Ruta POST /api/sales para crear una venta
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, interestRate, numberOfPayments } = req.body;
         if (!clientId || !saleItems || saleItems.length === 0) {
@@ -85,7 +85,7 @@ const initSalePaymentRoutes = (models, sequelize) => { // Recibe sequelize
         }
     });
 
-    // Ruta PUT /api/sales/:saleId/assign
+    // Ruta PUT /api/sales/:saleId/assign para asignar un gestor
     router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { saleId } = req.params;
         const { collectorId } = req.body;
@@ -103,6 +103,36 @@ const initSalePaymentRoutes = (models, sequelize) => { // Recibe sequelize
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+
+    // --- INICIO DEL CÓDIGO AÑADIDO ---
+    // RUTA PARA QUE EL GESTOR VEA SUS PROPIAS VENTAS
+    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
+        try {
+            // El ID del gestor se obtiene del token JWT, es seguro.
+            const collectorId = req.user.userId;
+
+            const assignedSales = await Sale.findAll({
+                where: {
+                    assignedCollectorId: collectorId,
+                    isCredit: true,
+                    status: { [Op.ne]: 'paid_off' } // No mostrar las que ya están pagadas
+                },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments' }
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+
+            res.json(assignedSales);
+
+        } catch (error) {
+            console.error('Error al obtener las ventas asignadas al gestor:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+    // --- FIN DEL CÓDIGO AÑADIDO ---
 
     return router;
 };
