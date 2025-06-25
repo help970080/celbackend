@@ -14,12 +14,46 @@ const initSalePaymentRoutes = (models, sequelize) => {
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // RUTA GET /: Obtiene la lista de todas las ventas
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-        // ... (código existente para GET que ya funciona)
-    });
+        try {
+            const { search, page, limit } = req.query;
+            const whereClause = {};
+            const includeClause = [
+                { model: Client, as: 'client', required: false },
+                { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', required: false }], required: false },
+                { model: User, as: 'assignedCollector', attributes: ['id', 'username'], required: false },
+                { model: Payment, as: 'payments', required: false }
+            ];
 
-    // RUTA POST /: Crea una nueva venta (CON LA NUEVA VALIDACIÓN)
+            if (search) {
+                whereClause[Op.or] = [
+                    Sequelize.where(Sequelize.cast(Sequelize.col('Sale.id'), 'varchar'), { [Op.iLike]: `%${search}%` }),
+                    { '$client.name$': { [Op.iLike]: `%${search}%` } },
+                    { '$client.lastName$': { [Op.iLike]: `%${search}%` } },
+                ];
+            }
+
+            const pageNum = parseInt(page, 10) || 1;
+            const limitNum = parseInt(limit, 10) || 10;
+            const offset = (pageNum - 1) * limitNum;
+
+            const { count, rows } = await Sale.findAndCountAll({
+                where: whereClause,
+                include: includeClause,
+                order: [['saleDate', 'DESC']],
+                limit: limitNum,
+                offset: offset,
+                distinct: true,
+                subQuery: false
+            });
+
+            res.json({ totalItems: count, totalPages: Math.ceil(count / limitNum), currentPage: pageNum, sales: rows });
+        } catch (error) {
+            console.error('Error al obtener ventas:', error);
+            res.status(500).json({ message: 'Error interno del servidor al obtener ventas.' });
+        }
+    });
+    
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, interestRate, numberOfPayments, assignedCollectorId } = req.body;
         
@@ -32,15 +66,12 @@ const initSalePaymentRoutes = (models, sequelize) => {
             const clientExists = await Client.findByPk(clientId, { transaction: t });
             if (!clientExists) throw new Error('Cliente no encontrado.');
 
-            // --- INICIO DE LA VALIDACIÓN DE SEGURIDAD AÑADIDA ---
             if (isCredit && assignedCollectorId) {
                 const collectorExists = await User.findByPk(parseInt(assignedCollectorId, 10), { transaction: t });
                 if (!collectorExists) {
-                    // En lugar de fallar, lanzamos un error claro y controlado.
                     throw new Error(`El gestor seleccionado con ID ${assignedCollectorId} no existe. Por favor, refresca la página y selecciona un gestor válido.`);
                 }
             }
-            // --- FIN DE LA VALIDACIÓN DE SEGURIDAD ---
 
             let totalAmountCalculated = 0;
             const createdSaleItemsInfo = [];
@@ -83,13 +114,47 @@ const initSalePaymentRoutes = (models, sequelize) => {
         } catch (error) {
             await t.rollback();
             console.error('Error al crear venta:', error);
-            // El mensaje de error ahora será más claro gracias a la validación
             res.status(400).json({ message: error.message || 'Error interno del servidor.' });
         }
     });
-    
-    // ... (resto de tus rutas como PUT /assign y GET /my-assigned)
-    
+
+    router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+        const { saleId } = req.params;
+        const { collectorId } = req.body;
+        if (collectorId === undefined) return res.status(400).json({ message: 'Se requiere el ID del gestor.' });
+        try {
+            const sale = await Sale.findByPk(saleId);
+            if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
+            if (!sale.isCredit) return res.status(400).json({ message: 'Solo se pueden asignar ventas a crédito.' });
+            sale.assignedCollectorId = collectorId === "null" ? null : parseInt(collectorId, 10);
+            await sale.save();
+            const updatedSale = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
+            res.json({ message: 'Gestor asignado con éxito.', sale: updatedSale });
+        } catch (error) {
+            console.error('Error al asignar gestor:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+
+    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
+        try {
+            const collectorId = req.user.userId;
+            const assignedSales = await Sale.findAll({
+                where: { assignedCollectorId: collectorId, isCredit: true, status: { [Op.ne]: 'paid_off' } },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments' }
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+            res.json(assignedSales);
+        } catch (error) {
+            console.error('Error al obtener las ventas asignadas al gestor:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+
     return router;
 };
 
