@@ -1,4 +1,3 @@
-// src/backend/models/index.js (Versión Final y Corregida)
 const UserModel = require('./User');
 const ClientModel = require('./Client');
 const ProductModel = require('./Product');
@@ -14,23 +13,17 @@ module.exports = (sequelize) => {
     const Payment = PaymentModel(sequelize);
     const SaleItem = SaleItemModel(sequelize);
 
-    // --- ASOCIACIONES CORREGIDAS ---
+    // --- ASOCIACIONES DEFINITIVAS ---
 
     Sale.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
     Client.hasMany(Sale, { foreignKey: 'clientId', as: 'sales' });
 
-    Sale.belongsTo(User, {
-      foreignKey: 'assignedCollectorId',
-      as: 'assignedCollector',
-      constraints: false
-    });
-    User.hasMany(Sale, {
-      foreignKey: 'assignedCollectorId',
-      as: 'assignedSales'
-    });
+    Sale.belongsTo(User, { foreignKey: 'assignedCollectorId', as: 'assignedCollector' });
+    User.hasMany(Sale, { foreignKey: 'assignedCollectorId', as: 'assignedSales' });
     
     Sale.hasMany(SaleItem, { foreignKey: 'saleId', as: 'saleItems', onDelete: 'CASCADE' });
     SaleItem.belongsTo(Sale, { foreignKey: 'saleId' });
+    
     SaleItem.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
     Product.hasMany(SaleItem, { foreignKey: 'productId' });
 
