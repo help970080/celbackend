@@ -1,5 +1,5 @@
 const express = require('express');
-const { Sequelize } = require('sequelize'); // No es necesario DataTypes aquí
+const { Sequelize } = require('sequelize');
 const cors = require('cors');
 const authMiddleware = require('./middleware/authMiddleware');
 
@@ -20,7 +20,6 @@ const sequelize = new Sequelize(process.env.DATABASE_URL, {
     logging: false
 });
 
-// Inicializa los modelos y sus asociaciones
 const models = require('./models')(sequelize);
 
 let isRegistrationAllowed = false; 
@@ -28,13 +27,10 @@ let isRegistrationAllowed = false;
 sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos (PostgreSQL).');
-        
-        // --- INICIO DE LA MODIFICACIÓN TEMPORAL ---
-        // Se cambia a { alter: true } para que Sequelize actualice la tabla 'sales'
-        // y añada la columna 'assignedCollectorId' que falta.
-        console.log('Sincronizando modelos con { alter: true }...');
-        return sequelize.sync({ alter: true }); 
-        // --- FIN DE LA MODIFICACIÓN TEMPORAL ---
+        // NOTA: Para producción, siempre usa { force: false }.
+        // Si necesitas hacer más cambios en la estructura de la base de datos en el futuro,
+        // puedes cambiarlo temporalmente a { alter: true } para un solo despliegue.
+        return sequelize.sync({ force: false }); 
     })
     .then(async () => {
         console.log('✅ Modelos sincronizados con la base de datos.');
@@ -50,15 +46,11 @@ sequelize.authenticate()
             }
         } catch (dbErr) {
             console.error('❌ Error al verificar administradores existentes:', dbErr);
-            isRegistrationAllowed = false; 
         }
 
         app.use(express.json());
 
-        const allowedOrigins = [
-            'http://localhost:5173',
-            process.env.FRONTEND_URL
-        ];
+        const allowedOrigins = ['http://localhost:5173', process.env.FRONTEND_URL];
         app.use(cors({
             origin: function (origin, callback) {
                 if (!origin || allowedOrigins.indexOf(origin) !== -1) {
@@ -69,20 +61,14 @@ sequelize.authenticate()
             }
         }));
         
-        // Middleware para registrar cada petición entrante (útil para depuración)
         app.use((req, res, next) => {
           console.log(`--> Petición Recibida: ${req.method} ${req.originalUrl}`);
           next();
         });
 
-        app.get('/api/auth/is-registration-allowed', (req, res) => {
-            res.json({ isRegistrationAllowed });
-        });
-
-        // Montaje de rutas
+        // Montaje de todas las rutas
         const initAuthRoutes = require('./routes/authRoutes');
-        app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed)); 
-        console.log('✅ Rutas de autenticación montadas.');
+        app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed));
 
         const initProductRoutes = require('./routes/productRoutes');
         app.use('/api/products', initProductRoutes(models));
@@ -91,13 +77,14 @@ sequelize.authenticate()
         app.use('/api/clients', authMiddleware, initClientRoutes(models));
 
         const initSalePaymentRoutes = require('./routes/salePaymentRoutes');
-        app.use('/api/sales', authMiddleware, initSalePaymentRoutes(models));
+        app.use('/api/sales', authMiddleware, initSalePaymentRoutes(models, sequelize)); // Pasamos sequelize aquí
 
         const initReportRoutes = require('./routes/reportRoutes');
         app.use('/api/reports', authMiddleware, initReportRoutes(models));
         
         const initUserRoutes = require('./routes/userRoutes');
         app.use('/api/users', authMiddleware, initUserRoutes(models));
+        
         console.log('✅ Todas las rutas principales han sido montadas.');
 
         app.get('/', (req, res) => {
