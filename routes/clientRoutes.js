@@ -2,46 +2,38 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
-const { Op, Sequelize } = require('sequelize');
+const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 const moment = require('moment-timezone');
 
-let Client, Sale, SaleItem, Product, Payment;
-
-const TIMEZONE = "America/Mexico_City";
+let Client, Sale, Payment;
 
 const initClientRoutes = (models) => {
     Client = models.Client;
     Sale = models.Sale;
-    SaleItem = models.SaleItem;
-    Product = models.Product;
     Payment = models.Payment;
 
-    // Ruta para obtener todos los clientes
-    router.get('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+    // Ruta para obtener la lista de clientes (para administradores)
+    router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
             const whereClause = {};
-
             if (search) {
                 whereClause[Op.or] = [
-                    { name: { [Op.like]: `%${search}%` } },
-                    { lastName: { [Op.like]: `%${search}%` } },
-                    { phone: { [Op.like]: `%${search}%` } }
+                    { name: { [Op.iLike]: `%${search}%` } },
+                    { lastName: { [Op.iLike]: `%${search}%` } },
+                    { phone: { [Op.iLike]: `%${search}%` } },
                 ];
             }
-
             const pageNum = parseInt(page, 10) || 1;
             const limitNum = parseInt(limit, 10) || 10;
             const offset = (pageNum - 1) * limitNum;
-
             const { count, rows } = await Client.findAndCountAll({
                 where: whereClause,
                 order: [['name', 'ASC']],
                 limit: limitNum,
                 offset: offset
             });
-
             res.json({
                 totalItems: count,
                 totalPages: Math.ceil(count / limitNum),
@@ -49,13 +41,13 @@ const initClientRoutes = (models) => {
                 clients: rows
             });
         } catch (error) {
-            res.status(500).json({ message: 'Error interno del servidor al obtener clientes.' });
+            res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
     // Ruta para obtener un cliente específico por ID
     // --- SE AÑADE 'collector_agent' A LOS PERMISOS ---
-    router.get('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
+    router.get('/:id', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         try {
             const client = await Client.findByPk(req.params.id);
             if (!client) {
@@ -63,12 +55,12 @@ const initClientRoutes = (models) => {
             }
             res.json(client);
         } catch (error) {
-            res.status(500).json({ message: 'Error interno del servidor al obtener cliente.' });
+            res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
     // Ruta para crear un nuevo cliente
-    router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+    router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const newClient = await Client.create(req.body);
             res.status(201).json(newClient);
@@ -76,11 +68,11 @@ const initClientRoutes = (models) => {
             if (error.name === 'SequelizeUniqueConstraintError') {
                 return res.status(400).json({ message: 'Ya existe un cliente con este email o teléfono.' });
             }
-            res.status(500).json({ message: 'Error interno del servidor al crear cliente.' });
+            res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    // El resto de tus rutas (PUT, DELETE, etc.) no necesitan cambios y pueden permanecer como las tienes.
+    
+    // Aquí puedes tener tus rutas PUT y DELETE, no necesitan cambios.
 
     return router;
 };
