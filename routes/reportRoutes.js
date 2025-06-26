@@ -16,8 +16,40 @@ const initReportRoutes = (models) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
 
-    // RUTA GET /client-statement/:clientId (PERMISOS CORREGIDOS)
-    router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
+    router.get('/summary', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const totalBalanceDue = await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
+            const activeCreditSalesCount = await Sale.count({ where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
+            const totalPaymentsReceived = await Payment.sum('amount');
+            const totalClientsCount = await Client.count();
+            const totalSalesCount = await Sale.count();
+            res.json({
+                totalBalanceDue: totalBalanceDue || 0,
+                activeCreditSalesCount,
+                totalPaymentsReceived: totalPaymentsReceived || 0,
+                totalClientsCount,
+                totalSalesCount
+            });
+        } catch (error) {
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+
+    router.get('/pending-credits', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const pendingCredits = await Sale.findAll({
+                where: { isCredit: true, balanceDue: { [Op.gt]: 0 }, status: { [Op.ne]: 'paid_off' } },
+                include: [{ model: Client, as: 'client' }, { model: Payment, as: 'payments' }],
+                order: [['balanceDue', 'DESC']]
+            });
+            res.json(pendingCredits);
+        } catch (error) {
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+
+    // RUTA para obtener el estado de cuenta del cliente (PERMISOS CORREGIDOS)
+    router.get('/client-statement/:clientId', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         try {
             const client = await Client.findByPk(clientId);
@@ -38,18 +70,14 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // RUTA GET /client-risk/:clientId (AÑADIDA Y CON PERMISOS CORREGIDOS)
-    router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
+    // RUTA para obtener el análisis de riesgo del cliente (PERMISOS CORREGIDOS)
+    router.get('/client-risk/:clientId', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         try {
-            const allCreditSales = await Sale.findAll({
-                where: { clientId: clientId, isCredit: true },
-                include: [{ model: Payment, as: 'payments' }]
-            });
-
+            const allCreditSales = await Sale.findAll({ where: { clientId, isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
             let riskCategory = 'BAJO';
             let riskDetails = 'No hay datos de crédito o todas las deudas están saldadas.';
-            
+
             if (allCreditSales.length > 0) {
                 const today = moment().tz(TIMEZONE).startOf('day');
                 const hasOverdueSale = allCreditSales.some(sale => {
@@ -59,7 +87,6 @@ const initReportRoutes = (models) => {
                     }
                     return false;
                 });
-
                 if (hasOverdueSale) {
                     riskCategory = 'ALTO';
                     riskDetails = 'Tiene una o más ventas a crédito vencidas.';
@@ -69,13 +96,12 @@ const initReportRoutes = (models) => {
             }
             res.json({ riskCategory, riskDetails });
         } catch (error) {
-            console.error('ERROR en /client-risk:', error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    // El resto de tus rutas de reportes no necesitan cambios.
     
+    // Aquí pueden ir tus otras rutas de reportes como /sales-by-date-range, etc.
+
     return router;
 };
 

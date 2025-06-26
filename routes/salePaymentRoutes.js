@@ -157,7 +157,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
     });
     
     // RUTA POST /:saleId/payments: Para registrar un pago
-    // --- CORRECCIÓN AQUÍ ---
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
@@ -181,7 +180,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    
+
     return router;
 };
 
