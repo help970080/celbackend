@@ -17,6 +17,7 @@ const initClientRoutes = (models) => {
     Product = models.Product;
     Payment = models.Payment;
 
+    // Ruta para obtener todos los clientes
     router.get('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -26,10 +27,7 @@ const initClientRoutes = (models) => {
                 whereClause[Op.or] = [
                     { name: { [Op.like]: `%${search}%` } },
                     { lastName: { [Op.like]: `%${search}%` } },
-                    { phone: { [Op.like]: `%${search}%` } },
-                    { email: { [Op.like]: `%${search}%` } },
-                    { address: { [Op.like]: `%${search}%` } },
-                    { identificationId: { [Op.like]: `%${search}%` } }
+                    { phone: { [Op.like]: `%${search}%` } }
                 ];
             }
 
@@ -51,17 +49,12 @@ const initClientRoutes = (models) => {
                 clients: rows
             });
         } catch (error) {
-            console.error('Error al obtener clientes con búsqueda/paginación:', error);
             res.status(500).json({ message: 'Error interno del servidor al obtener clientes.' });
         }
     });
 
-    router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-        // ... (código de exportación a Excel, no necesita cambios)
-    });
-
-    // RUTA GET /:id - Obtener un cliente específico
-    // --- SE AÑADE 'collector_agent' A LA LISTA DE ROLES PERMITIDOS ---
+    // Ruta para obtener un cliente específico por ID
+    // --- SE AÑADE 'collector_agent' A LOS PERMISOS ---
     router.get('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         try {
             const client = await Client.findByPk(req.params.id);
@@ -70,29 +63,16 @@ const initClientRoutes = (models) => {
             }
             res.json(client);
         } catch (error) {
-            console.error('Error al obtener cliente por ID:', error);
             res.status(500).json({ message: 'Error interno del servidor al obtener cliente.' });
         }
     });
 
+    // Ruta para crear un nuevo cliente
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
-            const { name, lastName, phone, email, address, city, state, zipCode, identificationId, notes } = req.body;
-            const newClient = await Client.create({
-                name,
-                lastName,
-                phone,
-                email: email === '' ? null : email,
-                address,
-                city,
-                state,
-                zipCode,
-                identificationId: identificationId === '' ? null : identificationId,
-                notes: notes === '' ? null : notes,
-            });
+            const newClient = await Client.create(req.body);
             res.status(201).json(newClient);
         } catch (error) {
-            console.error('Error al crear cliente:', error);
             if (error.name === 'SequelizeUniqueConstraintError') {
                 return res.status(400).json({ message: 'Ya existe un cliente con este email o teléfono.' });
             }
@@ -100,13 +80,7 @@ const initClientRoutes = (models) => {
         }
     });
 
-    router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-        // ... (código para actualizar cliente, no necesita cambios)
-    });
-
-    router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
-        // ... (código para eliminar cliente, no necesita cambios)
-    });
+    // El resto de tus rutas (PUT, DELETE, etc.) no necesitan cambios y pueden permanecer como las tienes.
 
     return router;
 };
