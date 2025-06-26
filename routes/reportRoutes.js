@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const authorizeRoles = require('../middleware/roleMiddleware');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 const moment = require('moment-timezone');
+const authMiddleware = require('../middleware/authMiddleware');
+const authorizeRoles = require('../middleware/roleMiddleware');
 
 let Sale, Client, Product, Payment, SaleItem;
+
 const TIMEZONE = "America/Mexico_City";
 
 const initReportRoutes = (models) => {
@@ -14,8 +16,7 @@ const initReportRoutes = (models) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
 
-    // RUTA para obtener el estado de cuenta del cliente
-    // --- SE AÑADE 'collector_agent' A LOS PERMISOS ---
+    // RUTA GET /client-statement/:clientId (PERMISOS CORREGIDOS)
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         try {
@@ -37,15 +38,18 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // RUTA para obtener el análisis de riesgo del cliente
-    // --- SE AÑADE 'collector_agent' A LOS PERMISOS ---
+    // RUTA GET /client-risk/:clientId (AÑADIDA Y CON PERMISOS CORREGIDOS)
     router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         try {
-            const allCreditSales = await Sale.findAll({ where: { clientId, isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
+            const allCreditSales = await Sale.findAll({
+                where: { clientId: clientId, isCredit: true },
+                include: [{ model: Payment, as: 'payments' }]
+            });
+
             let riskCategory = 'BAJO';
             let riskDetails = 'No hay datos de crédito o todas las deudas están saldadas.';
-
+            
             if (allCreditSales.length > 0) {
                 const today = moment().tz(TIMEZONE).startOf('day');
                 const hasOverdueSale = allCreditSales.some(sale => {
@@ -55,6 +59,7 @@ const initReportRoutes = (models) => {
                     }
                     return false;
                 });
+
                 if (hasOverdueSale) {
                     riskCategory = 'ALTO';
                     riskDetails = 'Tiene una o más ventas a crédito vencidas.';
@@ -64,12 +69,13 @@ const initReportRoutes = (models) => {
             }
             res.json({ riskCategory, riskDetails });
         } catch (error) {
+            console.error('ERROR en /client-risk:', error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
     // El resto de tus rutas de reportes no necesitan cambios.
-
+    
     return router;
 };
 
