@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authorizeRoles = require('../middleware/roleMiddleware');
+// ... otros imports ...
 
 let Sale, Payment;
 
@@ -32,8 +33,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // El resto de las rutas de ventas no necesitan cambios.
-
+    // El resto de las rutas (crear venta, etc.) no necesitan cambios
+    
     return router;
 };
 
