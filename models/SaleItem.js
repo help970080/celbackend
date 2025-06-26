@@ -5,14 +5,15 @@ module.exports = (sequelize) => {
         id: {
             type: DataTypes.INTEGER,
             primaryKey: true,
-            autoIncrement: true,
-            allowNull: false
+            autoIncrement: true
         },
         quantity: {
             type: DataTypes.INTEGER,
             allowNull: false,
             defaultValue: 1
         },
+        // --- CORRECCIÓN CLAVE ---
+        // Se define explícitamente que el precio es obligatorio.
         priceAtSale: {
             type: DataTypes.FLOAT,
             allowNull: false

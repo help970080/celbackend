@@ -14,7 +14,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // RUTA GET /: Obtiene la lista de todas las ventas (VERSIÓN FINAL CORREGIDA)
+    // RUTA GET /: Obtiene la lista de todas las ventas para el administrador
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -23,12 +23,10 @@ const initSalePaymentRoutes = (models, sequelize) => {
             const offset = (pageNum - 1) * limitNum;
 
             let whereClause = {};
-            // El include ahora es más robusto y se maneja correctamente
             let includeClause = [
-                { model: Client, as: 'client', required: true },
-                { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
-                { model: User, as: 'assignedCollector', attributes: ['id', 'username'] },
-                { model: Payment, as: 'payments' }
+                { model: Client, as: 'client', required: false },
+                { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', required: false }], required: false },
+                { model: User, as: 'assignedCollector', attributes: ['id', 'username'], required: false }
             ];
 
             if (search) {
@@ -37,8 +35,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
                         Sequelize.where(Sequelize.cast(Sequelize.col('Sale.id'), 'varchar'), { [Op.iLike]: `%${search}%` }),
                         { '$client.name$': { [Op.iLike]: `%${search}%` } },
                         { '$client.lastName$': { [Op.iLike]: `%${search}%` } },
-                        // La búsqueda en productos requiere un enfoque diferente si se necesita,
-                        // por ahora se ha quitado para garantizar la estabilidad.
                     ]
                 };
             }
@@ -49,8 +45,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 order: [['saleDate', 'DESC']],
                 limit: limitNum,
                 offset: offset,
-                distinct: true, // Importante para evitar contar filas duplicadas por los joins
-                subQuery: false // Ayuda a que limit/offset funcionen correctamente con joins complejos
+                distinct: true,
+                subQuery: false
             });
 
             res.json({
@@ -65,12 +61,14 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // RUTA POST /: Crea una nueva venta
+    // RUTA POST /: Crea una nueva venta (VERSIÓN FINAL Y CORREGIDA)
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, interestRate, numberOfPayments, assignedCollectorId } = req.body;
+        
         if (!clientId || !saleItems || !saleItems.length) {
-            return res.status(400).json({ message: 'Faltan datos obligatorios.' });
+            return res.status(400).json({ message: 'Faltan datos obligatorios (cliente, productos).' });
         }
+
         const t = await sequelize.transaction();
         try {
             const clientExists = await Client.findByPk(clientId, { transaction: t });
@@ -78,19 +76,30 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
             if (isCredit && assignedCollectorId) {
                 const collectorExists = await User.findByPk(parseInt(assignedCollectorId, 10), { transaction: t });
-                if (!collectorExists) throw new Error(`El gestor seleccionado no existe.`);
+                if (!collectorExists) throw new Error(`El gestor seleccionado no existe. Por favor, refresca la página y selecciona un gestor válido.`);
             }
 
             let totalAmountCalculated = 0;
+            const saleItemsToCreate = []; 
+
             for (const item of saleItems) {
                 const product = await Product.findByPk(item.productId, { transaction: t, lock: true });
-                if (!product || product.stock < item.quantity) throw new Error(`Stock insuficiente para ${product?.name || 'producto desconocido'}.`);
+                if (!product) throw new Error(`Producto con ID ${item.productId} no encontrado.`);
+                if (product.stock < item.quantity) throw new Error(`Stock insuficiente para ${product.name}.`);
+                
                 totalAmountCalculated += product.price * item.quantity;
+                
+                saleItemsToCreate.push({
+                    productId: item.productId,
+                    quantity: item.quantity,
+                    priceAtSale: product.price // <-- La corrección clave está aquí
+                });
+
                 product.stock -= item.quantity;
                 await product.save({ transaction: t });
             }
 
-            const saleData = {
+            let saleData = {
                 clientId,
                 totalAmount: parseFloat(totalAmountCalculated.toFixed(2)),
                 isCredit: !!isCredit,
@@ -100,23 +109,21 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
             if (isCredit) {
                 if (parseInt(numberOfPayments, 10) !== 17) throw new Error('El número de pagos debe ser 17.');
-                if (downPayment === undefined || parseFloat(downPayment) < 0 || parseFloat(downPayment) > totalAmountCalculated) throw new Error('El enganche es inválido o mayor al total.');
+                if (downPayment === undefined || parseFloat(downPayment) < 0) throw new Error('El enganche es obligatorio y debe ser un valor positivo.');
+                if (parseFloat(downPayment) > totalAmountCalculated) throw new Error('El enganche no puede ser mayor al monto total.');
                 const balance = totalAmountCalculated - parseFloat(downPayment);
-                saleData.downPayment = parseFloat(downPayment);
-                saleData.interestRate = interestRate || 0;
-                saleData.numberOfPayments = 17;
-                saleData.weeklyPaymentAmount = parseFloat((balance / 17).toFixed(2));
-                saleData.balanceDue = parseFloat(balance.toFixed(2));
+                saleData = { ...saleData, downPayment, interestRate: interestRate || 0, numberOfPayments: 17, weeklyPaymentAmount: parseFloat((balance / 17).toFixed(2)), balanceDue: parseFloat(balance.toFixed(2)) };
             } else {
                 saleData.balanceDue = 0;
                 saleData.downPayment = totalAmountCalculated;
             }
 
             const newSale = await Sale.create(saleData, { transaction: t });
-            const saleItemsToCreate = saleItems.map(item => ({...item, saleId: newSale.id}));
-            await SaleItem.bulkCreate(saleItemsToCreate, { transaction: t });
-            await t.commit();
+            
+            const finalSaleItems = saleItemsToCreate.map(item => ({ ...item, saleId: newSale.id }));
+            await SaleItem.bulkCreate(finalSaleItems, { transaction: t });
 
+            await t.commit();
             const fullNewSale = await Sale.findByPk(newSale.id, { include: [{ all: true, nested: true }] });
             res.status(201).json(fullNewSale);
         } catch (error) {
@@ -125,8 +132,45 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(400).json({ message: error.message || 'Error interno del servidor.' });
         }
     });
+    
+    // RUTA PUT /:saleId/assign: Asigna o reasigna un gestor
+    router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+        const { saleId } = req.params;
+        const { collectorId } = req.body;
+        if (collectorId === undefined) return res.status(400).json({ message: 'Se requiere el ID del gestor.' });
+        try {
+            const sale = await Sale.findByPk(saleId);
+            if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
+            if (!sale.isCredit) return res.status(400).json({ message: 'Solo se pueden asignar ventas a crédito.' });
+            sale.assignedCollectorId = collectorId === "null" ? null : parseInt(collectorId, 10);
+            await sale.save();
+            const updatedSale = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
+            res.json({ message: 'Gestor asignado con éxito.', sale: updatedSale });
+        } catch (error) {
+            console.error('Error al asignar gestor:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
 
-    // ... (El resto de tus rutas como PUT /assign y GET /my-assigned)
+    // RUTA GET /my-assigned: Para que el gestor vea sus propias ventas
+    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
+        try {
+            const collectorId = req.user.userId;
+            const assignedSales = await Sale.findAll({
+                where: { assignedCollectorId: collectorId, isCredit: true, status: { [Op.ne]: 'paid_off' } },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments' }
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+            res.json(assignedSales);
+        } catch (error) {
+            console.error('Error al obtener ventas asignadas:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
 
     return router;
 };
