@@ -1,26 +1,27 @@
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs'); // Importamos bcrypt aquí
+const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
+const bcrypt = require('bcryptjs'); // Se importa bcrypt para usarlo explícitamente
 
 let User;
 
 const initUserRoutes = (models) => {
     User = models.User;
 
-    // RUTA GET /: Obtiene la lista de usuarios
-    router.get('/', authorizeRoles(['super_admin', 'regular_admin']), async (req, res) => {
+    // Ruta para obtener todos los usuarios (Solo Super Admin)
+    router.get('/', authorizeRoles(['super_admin']), async (req, res) => {
         try {
-            const users = await User.findAll({ attributes: ['id', 'username', 'role', 'createdAt'] });
+            const users = await User.findAll({ attributes: ['id', 'username', 'role', 'createdAt', 'updatedAt'] });
             res.json(users);
         } catch (error) {
-            console.error("Error al obtener usuarios:", error);
+            console.error('Error al obtener usuarios:', error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
-    // RUTA POST /: Crea un nuevo usuario (VERSIÓN FINAL Y CORREGIDA)
-    router.post('/', authorizeRoles('super_admin'), async (req, res) => {
+    // RUTA PARA CREAR UN NUEVO USUARIO (VERSIÓN FINAL Y CORREGIDA)
+    router.post('/', authorizeRoles(['super_admin']), async (req, res) => {
         const { username, password, role } = req.body;
         if (!username || !password || !role) {
             return res.status(400).json({ message: 'Nombre de usuario, contraseña y rol son obligatorios.' });
@@ -36,11 +37,10 @@ const initUserRoutes = (models) => {
 
             const newUser = await User.create({
                 username,
-                password: hashedPassword, // Guardamos la contraseña ya encriptada
+                password: hashedPassword, // Se guarda la contraseña ya encriptada
                 role
             });
 
-            // No devolvemos la contraseña en la respuesta
             const userResponse = { id: newUser.id, username: newUser.username, role: newUser.role };
             res.status(201).json(userResponse);
         } catch (error) {
@@ -52,18 +52,14 @@ const initUserRoutes = (models) => {
         }
     });
 
-    // RUTA DELETE /:id : Elimina un usuario
-    router.delete('/:id', authorizeRoles('super_admin'), async (req, res) => {
+    // RUTA PARA ELIMINAR UN USUARIO
+    router.delete('/:id', authorizeRoles(['super_admin']), async (req, res) => {
         try {
-            const user = await User.findByPk(req.params.id);
-            if (!user) {
-                return res.status(404).json({ message: 'Usuario no encontrado.' });
-            }
-            // Evitar que un super_admin se elimine a sí mismo
-            if (user.id === req.user.userId) {
-                return res.status(403).json({ message: 'No puedes eliminar tu propia cuenta de super administrador.' });
-            }
-            await user.destroy();
+            const userToDelete = await User.findByPk(req.params.id);
+            if (!userToDelete) return res.status(404).json({ message: 'Usuario no encontrado.' });
+            if (req.user.userId === parseInt(req.params.id)) return res.status(403).json({ message: 'No puedes eliminar tu propia cuenta.' });
+            
+            await userToDelete.destroy();
             res.status(200).json({ message: 'Usuario eliminado con éxito.' });
         } catch (error) {
             console.error("Error al eliminar usuario:", error);
