@@ -12,10 +12,10 @@ const initUserRoutes = (models) => {
     // Ruta para obtener todos los usuarios (Solo Super Admin)
     router.get('/', authorizeRoles(['super_admin']), async (req, res) => {
         try {
-            const users = await User.findAll({ attributes: ['id', 'username', 'role', 'createdAt', 'updatedAt'] });
+            const users = await User.findAll({ attributes: { exclude: ['password'] } });
             res.json(users);
         } catch (error) {
-            console.error('Error al obtener usuarios:', error);
+            console.error("Error al obtener usuarios:", error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
@@ -29,8 +29,8 @@ const initUserRoutes = (models) => {
 
         try {
             // --- INICIO DE LA CORRECCIÓN DE SEGURIDAD ---
-            // Encriptamos la contraseña manualmente antes de crear el usuario
-            // para garantizar que siempre se guarde de forma segura.
+            // Encriptamos la contraseña manualmente ANTES de crear el usuario.
+            // Esta es la lógica que faltaba y que ahora es explícita.
             const salt = await bcrypt.genSalt(10);
             const hashedPassword = await bcrypt.hash(password, salt);
             // --- FIN DE LA CORRECCIÓN DE SEGURIDAD ---
@@ -41,6 +41,7 @@ const initUserRoutes = (models) => {
                 role
             });
 
+            // No devolvemos la contraseña en la respuesta
             const userResponse = { id: newUser.id, username: newUser.username, role: newUser.role };
             res.status(201).json(userResponse);
         } catch (error) {
@@ -52,13 +53,16 @@ const initUserRoutes = (models) => {
         }
     });
 
-    // RUTA PARA ELIMINAR UN USUARIO
+    // Ruta para eliminar un usuario (sin cambios)
     router.delete('/:id', authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const userToDelete = await User.findByPk(req.params.id);
-            if (!userToDelete) return res.status(404).json({ message: 'Usuario no encontrado.' });
-            if (req.user.userId === parseInt(req.params.id)) return res.status(403).json({ message: 'No puedes eliminar tu propia cuenta.' });
-            
+            if (!userToDelete) {
+                return res.status(404).json({ message: 'Usuario no encontrado.' });
+            }
+            if (req.user.userId === parseInt(req.params.id)) {
+                return res.status(403).json({ message: 'No puedes eliminar tu propia cuenta.' });
+            }
             await userToDelete.destroy();
             res.status(200).json({ message: 'Usuario eliminado con éxito.' });
         } catch (error) {
@@ -66,6 +70,8 @@ const initUserRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+    
+    // Aquí puedes añadir tu ruta PUT para actualizar, si la tienes.
 
     return router;
 };
