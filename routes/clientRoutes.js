@@ -1,10 +1,13 @@
+// Archivo: routes/clientRoutes.js
+
 const express = require('express');
 const router = express.Router();
-const authMiddleware = require('../middleware/authMiddleware');
+// ... (otros requires no cambian) ...
 const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 const moment = require('moment-timezone');
+
 
 let Client, Sale, Payment;
 const TIMEZONE = "America/Mexico_City";
@@ -14,6 +17,7 @@ const initClientRoutes = (models) => {
     Sale = models.Sale;
     Payment = models.Payment;
 
+    // ... (la ruta GET / no cambia) ...
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -40,6 +44,7 @@ const initClientRoutes = (models) => {
         }
     });
 
+    // ... (la ruta GET /export-excel no cambia) ...
     router.get('/export-excel', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const clients = await Client.findAll({
@@ -96,16 +101,24 @@ const initClientRoutes = (models) => {
         }
     });
 
+
+    // --- INICIO DE LA CORRECCIÓN ---
     router.get('/:id', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
+        const { id } = req.params;
+        if (isNaN(parseInt(id, 10))) {
+            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+        }
         try {
-            const client = await Client.findByPk(req.params.id);
+            const client = await Client.findByPk(id);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             res.json(client);
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+    // --- FIN DE LA CORRECCIÓN ---
 
+    // ... (el resto de las rutas POST, PUT, DELETE no cambian sustancialmente, pero añadir la validación es buena práctica) ...
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const newClient = await Client.create(req.body);
@@ -117,8 +130,12 @@ const initClientRoutes = (models) => {
     });
 
     router.put('/:id', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+        const { id } = req.params;
+        if (isNaN(parseInt(id, 10))) {
+            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+        }
         try {
-            const client = await Client.findByPk(req.params.id);
+            const client = await Client.findByPk(id);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             await client.update(req.body);
             res.json(client);
@@ -128,8 +145,12 @@ const initClientRoutes = (models) => {
     });
 
     router.delete('/:id', authorizeRoles(['super_admin']), async (req, res) => {
+        const { id } = req.params;
+        if (isNaN(parseInt(id, 10))) {
+            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+        }
         try {
-            const client = await Client.findByPk(req.params.id);
+            const client = await Client.findByPk(id);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             await client.destroy();
             res.status(204).send();
@@ -137,6 +158,7 @@ const initClientRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+
 
     return router;
 };

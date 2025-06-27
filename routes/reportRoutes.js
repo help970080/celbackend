@@ -1,8 +1,10 @@
+// Archivo: routes/reportRoutes.js
 const express = require('express');
 const router = express.Router();
+// ... (otros requires no cambian) ...
+const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op, Sequelize } = require('sequelize');
 const moment = require('moment-timezone');
-const authorizeRoles = require('../middleware/roleMiddleware');
 
 let Sale, Client, Product, Payment, SaleItem;
 
@@ -15,7 +17,7 @@ const initReportRoutes = (models) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
 
-    // Ruta de Resumen General
+    // ... (la ruta GET /summary no cambia) ...
     router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const totalBalanceDue = await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
@@ -36,7 +38,8 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // Ruta de Dashboard de Estado de Clientes
+
+    // ... (la ruta GET /client-status-dashboard no cambia) ...
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const allCreditSales = await Sale.findAll({ where: { isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
@@ -72,9 +75,13 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // RUTA para obtener el estado de cuenta del cliente
+
+    // --- INICIO DE LA CORRECCIÓN ---
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
+        if (isNaN(parseInt(clientId, 10))) {
+            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+        }
         try {
             const client = await Client.findByPk(clientId);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
@@ -94,9 +101,11 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // RUTA para obtener el análisis de riesgo del cliente
     router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
+        if (isNaN(parseInt(clientId, 10))) {
+            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+        }
         try {
             const allCreditSales = await Sale.findAll({ where: { clientId, isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
             let riskCategory = 'BAJO';
@@ -123,8 +132,9 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    
-    // Ruta para obtener todos los créditos con saldo pendiente
+    // --- FIN DE LA CORRECCIÓN ---
+
+    // ... (el resto de las rutas no cambian)
     router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const pendingCredits = await Sale.findAll({
@@ -146,7 +156,6 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // Ruta para obtener ventas en un rango de fechas
     router.get('/sales-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { startDate, endDate } = req.query;
@@ -168,7 +177,6 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // Ruta para obtener pagos en un rango de fechas
     router.get('/payments-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { startDate, endDate } = req.query;
@@ -190,15 +198,12 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // Ruta para obtener ventas acumuladas por período
     router.get('/sales-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
             const whereClause = {};
             if (startDate && endDate) {
-                // --- INICIO DE LA CORRECCIÓN ---
                 whereClause.saleDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
-                // --- FIN DE LA CORRECCIÓN ---
             }
             const results = await Sale.findAll({
                 attributes: [
@@ -217,7 +222,6 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // Ruta para obtener pagos acumulados por período
     router.get('/payments-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
@@ -241,7 +245,7 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
         }
     });
-    
+
     return router;
 };
 
