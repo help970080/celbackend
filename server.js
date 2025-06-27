@@ -60,10 +60,13 @@ sequelize.authenticate()
         const initUserRoutes = require('./routes/userRoutes');
         app.use('/api/users', authMiddleware, initUserRoutes(models));
 
-        // --- INICIO: NUEVAS RUTAS ---
         const initAuditRoutes = require('./routes/auditRoutes');
         app.use('/api/audit', authMiddleware, initAuditRoutes(models));
-        // --- FIN: NUEVAS RUTAS ---
+        
+        // --- INICIO: NUEVAS RUTAS PARA EL DASHBOARD VISUAL ---
+        const initDashboardRoutes = require('./routes/dashboardRoutes');
+        app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
+        // --- FIN: NUEVAS RUTAS PARA EL DASHBOARD VISUAL ---
         
         console.log('✅ Todas las rutas principales han sido montadas.');
         app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
