@@ -1,10 +1,14 @@
+// Archivo: routes/salePaymentRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
+const moment = require('moment-timezone'); // Se añade moment para cálculos de fechas
 
 let Sale, Client, Product, Payment, SaleItem, User;
+const TIMEZONE = "America/Mexico_City";
 
 const initSalePaymentRoutes = (models, sequelize) => {
     Sale = models.Sale;
@@ -14,7 +18,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // RUTA GET /: Obtiene la lista de todas las ventas para el administrador (Lógica de búsqueda corregida)
+    // ... (las otras rutas como GET /, POST /, PUT /:saleId/assign no cambian) ...
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -54,7 +58,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // RUTA POST /: Crea una nueva venta (Lógica robusta con transacción)
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId } = req.body;
         if (!clientId || !saleItems || !saleItems.length) {
@@ -109,7 +112,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // RUTA PUT /:saleId/assign: Asigna o reasigna un gestor
     router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { saleId } = req.params;
         const { collectorId } = req.body;
@@ -127,12 +129,17 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // RUTA GET /my-assigned: Para que el gestor vea sus propias ventas
+    // --- INICIO DE LA CORRECCIÓN ---
+    // RUTA GET /my-assigned: Modificada para añadir estatus dinámico
     router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
         try {
             const collectorId = req.user.userId;
             const assignedSales = await Sale.findAll({
-                where: { assignedCollectorId: collectorId, isCredit: true, status: { [Op.ne]: 'paid_off' } },
+                where: { 
+                    assignedCollectorId: collectorId, 
+                    isCredit: true, 
+                    status: { [Op.ne]: 'paid_off' } 
+                },
                 include: [
                     { model: Client, as: 'client' },
                     { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
@@ -140,13 +147,39 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 ],
                 order: [['saleDate', 'ASC']]
             });
-            res.json(assignedSales);
+
+            // Procesar las ventas para añadir el estatus dinámico
+            const today = moment().tz(TIMEZONE).startOf('day');
+            const processedSales = assignedSales.map(sale => {
+                const saleJSON = sale.toJSON(); // Convertir a objeto plano para poder modificarlo
+                let dynamicStatus = 'AL_CORRIENTE';
+
+                const lastPaymentDate = saleJSON.payments.length > 0 
+                    ? moment(saleJSON.payments.sort((a,b) => new Date(b.paymentDate) - new Date(a.paymentDate))[0].paymentDate) 
+                    : moment(saleJSON.saleDate);
+                
+                // Se considera vencido si han pasado más de 7 días (a partir del 8vo día)
+                const dueDate = moment(lastPaymentDate).tz(TIMEZONE).add(7, 'days').endOf('day');
+
+                if (today.isAfter(dueDate)) {
+                    dynamicStatus = 'VENCIDO';
+                } else if (dueDate.diff(today, 'days') < 3) { // Considerar "por vencer" si faltan 3 días o menos
+                    dynamicStatus = 'POR_VENCER';
+                }
+                
+                saleJSON.dynamicStatus = dynamicStatus;
+                return saleJSON;
+            });
+
+            res.json(processedSales);
+
         } catch (error) {
+            console.error(error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+    // --- FIN DE LA CORRECCIÓN ---
 
-    // RUTA POST /:saleId/payments: Para registrar un pago
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
@@ -167,6 +200,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+
 
     return router;
 };
