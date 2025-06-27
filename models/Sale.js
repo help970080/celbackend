@@ -6,7 +6,6 @@ module.exports = (sequelize) => {
         clientId: {
             type: DataTypes.INTEGER,
             allowNull: false,
-            // La referencia a Clientes funciona bien, la dejamos
             references: {
                 model: 'Clientes', 
                 key: 'id'
@@ -23,21 +22,19 @@ module.exports = (sequelize) => {
         balanceDue: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
         status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'completed' },
         
-        // --- CAMBIO DE EMERGENCIA ---
-        // Se elimina temporalmente la restricción de clave foránea para evitar el error.
-        // El campo seguirá guardando el ID del gestor, pero sin la validación estricta de la BD.
+        // --- INICIO DE LA CORRECCIÓN ---
+        // Se restaura la restricción de clave foránea para garantizar integridad de datos.
         assignedCollectorId: {
             type: DataTypes.INTEGER,
-            allowNull: true
-            /*
+            allowNull: true,
             references: {
                 model: 'Usuarios',
                 key: 'id'
             },
             onUpdate: 'CASCADE',
             onDelete: 'SET NULL'
-            */
         },
+        // --- FIN DE LA CORRECCIÓN ---
     }, {
         tableName: 'sales',
         timestamps: true
