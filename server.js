@@ -20,7 +20,12 @@ let isRegistrationAllowed = false;
 sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos.');
-        return sequelize.sync({ force: false }); 
+
+        // --- CAMBIO TEMPORAL: Usa 'alter: true' para actualizar la BD ---
+        // Esto añadirá las columnas que falten (como 'password') a tus tablas existentes sin borrar datos.
+        return sequelize.sync({ alter: true }); 
+        // --- FIN DEL CAMBIO TEMPORAL ---
+
     })
     .then(async () => {
         console.log('✅ Modelos sincronizados con la base de datos.');
@@ -52,7 +57,7 @@ sequelize.authenticate()
         const initPortalRoutes = require('./routes/portalRoutes');
         app.use('/api/portal', initPortalRoutes(models));
         const initProductRoutes = require('./routes/productRoutes');
-        app.use('/api/products', initProductRoutes(models)); // Middleware se aplica adentro
+        app.use('/api/products', initProductRoutes(models));
         
         // Rutas protegidas
         const initClientRoutes = require('./routes/clientRoutes');
