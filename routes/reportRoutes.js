@@ -123,9 +123,6 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    // --- INICIO DE LA CORRECCIÓN ---
-    // Esta es la ruta que faltaba para solucionar el error 404.
     
     // Ruta para obtener todos los créditos con saldo pendiente
     router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
@@ -148,8 +145,6 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor al obtener créditos pendientes.' });
         }
     });
-
-    // --- FIN DE LA CORRECCIÓN ---
 
     // Ruta para obtener ventas en un rango de fechas
     router.get('/sales-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
@@ -201,7 +196,9 @@ const initReportRoutes = (models) => {
             const { period = 'day', startDate, endDate } = req.query;
             const whereClause = {};
             if (startDate && endDate) {
+                // --- INICIO DE LA CORRECCIÓN ---
                 whereClause.saleDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+                // --- FIN DE LA CORRECCIÓN ---
             }
             const results = await Sale.findAll({
                 attributes: [
@@ -244,3 +241,8 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
         }
     });
+    
+    return router;
+};
+
+module.exports = initReportRoutes;
