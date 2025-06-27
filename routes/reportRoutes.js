@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
 const moment = require('moment-timezone');
-const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 
 let Sale, Client, Product, Payment, SaleItem;
@@ -124,6 +123,104 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+
+    // --- INICIO DE LA CORRECCIÓN: RUTAS FALTANTES ---
+    
+    // Ruta para obtener ventas en un rango de fechas
+    router.get('/sales-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const { startDate, endDate } = req.query;
+            const sales = await Sale.findAll({
+                where: {
+                    saleDate: {
+                        [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
+                    }
+                },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }
+                ],
+                order: [['saleDate', 'DESC']]
+            });
+            res.json(sales);
+        } catch (error) {
+            res.status(500).json({ message: 'Error al obtener ventas por rango de fecha.' });
+        }
+    });
+
+    // Ruta para obtener pagos en un rango de fechas
+    router.get('/payments-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const { startDate, endDate } = req.query;
+            const payments = await Payment.findAll({
+                where: {
+                    paymentDate: {
+                        [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
+                    }
+                },
+                include: [{
+                    model: Sale, as: 'sale',
+                    include: [{ model: Client, as: 'client' }]
+                }],
+                order: [['paymentDate', 'DESC']]
+            });
+            res.json(payments);
+        } catch (error) {
+            res.status(500).json({ message: 'Error al obtener pagos por rango de fecha.' });
+        }
+    });
+
+    // Ruta para obtener ventas acumuladas por período
+    router.get('/sales-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const { period = 'day', startDate, endDate } = req.query;
+            const whereClause = {};
+            if (startDate && endDate) {
+                whereClause.saleDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+            }
+            const results = await Sale.findAll({
+                attributes: [
+                    [Sequelize.fn('date_trunc', period, Sequelize.col('saleDate')), period],
+                    [Sequelize.fn('sum', Sequelize.col('totalAmount')), 'totalAmount'],
+                    [Sequelize.fn('count', Sequelize.col('id')), 'count']
+                ],
+                where: whereClause,
+                group: [Sequelize.fn('date_trunc', period, Sequelize.col('saleDate'))],
+                order: [[Sequelize.fn('date_trunc', period, Sequelize.col('saleDate')), 'DESC']],
+                raw: true
+            });
+            res.json(results);
+        } catch (error) {
+            res.status(500).json({ message: 'Error al obtener ventas acumuladas.' });
+        }
+    });
+
+    // Ruta para obtener pagos acumulados por período
+    router.get('/payments-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const { period = 'day', startDate, endDate } = req.query;
+            const whereClause = {};
+            if (startDate && endDate) {
+                whereClause.paymentDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+            }
+            const results = await Payment.findAll({
+                attributes: [
+                    [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), period],
+                    [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
+                    [Sequelize.fn('count', Sequelize.col('id')), 'count']
+                ],
+                where: whereClause,
+                group: [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate'))],
+                order: [[Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), 'DESC']],
+                raw: true
+            });
+            res.json(results);
+        } catch (error) {
+            res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
+        }
+    });
+
+    // --- FIN DE LA CORRECCIÓN ---
 
     return router;
 };
