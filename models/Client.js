@@ -7,12 +7,7 @@ module.exports = (sequelize) => {
         name: { type: DataTypes.STRING, allowNull: false },
         lastName: { type: DataTypes.STRING, allowNull: false },
         phone: { type: DataTypes.STRING, allowNull: false, unique: true },
-        
-        // --- INICIO DE LA CORRECCIÓN ---
-        // El error estaba aquí: 'allowNul' se ha corregido a 'allowNull'.
         email: { type: DataTypes.STRING, unique: true, allowNull: true, validate: { isEmail: true } },
-        // --- FIN DE LA CORRECCIÓN ---
-
         password: {
             type: DataTypes.STRING,
             allowNull: true
@@ -48,3 +43,4 @@ module.exports = (sequelize) => {
 
     return Client;
 };
+// LA LLAVE '}' EXTRA QUE ESTABA AQUÍ HA SIDO ELIMINADA.
