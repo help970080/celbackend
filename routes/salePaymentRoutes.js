@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 const moment = require('moment-timezone');
@@ -17,67 +17,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
     User = models.User;
-
-    // --- INICIO DE LA CORRECCIÓN ---
-    // RUTA GET /my-assigned: Reconstruida para agrupar ventas por cliente.
-    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
-        try {
-            const collectorId = req.user.userId;
-            const assignedSales = await Sale.findAll({
-                where: { 
-                    assignedCollectorId: collectorId, 
-                    isCredit: true, 
-                    status: { [Op.ne]: 'paid_off' } 
-                },
-                include: [
-                    { model: Client, as: 'client' },
-                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
-                    { model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }
-                ],
-                order: [['saleDate', 'ASC']]
-            });
-
-            // Agrupar ventas por cliente
-            const groupedByClient = assignedSales.reduce((acc, sale) => {
-                const clientId = sale.client.id;
-                if (!acc[clientId]) {
-                    acc[clientId] = {
-                        client: sale.client.toJSON(),
-                        sales: [],
-                        hasOverdue: false // Para priorizar
-                    };
-                }
-
-                // Calcular estatus dinámico para cada venta
-                const today = moment().tz(TIMEZONE).startOf('day');
-                const lastPaymentDate = sale.payments.length > 0 
-                    ? moment(sale.payments[0].paymentDate) 
-                    : moment(sale.saleDate);
-                const dueDate = moment(lastPaymentDate).tz(TIMEZONE).add(7, 'days').endOf('day');
-                
-                const saleJSON = sale.toJSON();
-                if (today.isAfter(dueDate)) {
-                    saleJSON.dynamicStatus = 'VENCIDO';
-                    acc[clientId].hasOverdue = true; // Marcar al cliente como con atraso
-                } else {
-                    saleJSON.dynamicStatus = 'AL_CORRIENTE';
-                }
-
-                acc[clientId].sales.push(saleJSON);
-                return acc;
-            }, {});
-
-            const result = Object.values(groupedByClient);
-            res.json(result);
-
-        } catch (error) {
-            console.error(error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
-        }
-    });
-    // --- FIN DE LA CORRECCIÓN ---
-
-    // ... (El resto de las rutas: GET /, POST /, PUT /:saleId/assign, POST /:saleId/payments no cambian y permanecen igual)
+    
+    // ... (la ruta GET / no cambia) ...
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -117,6 +58,37 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+    // --- INICIO DE LA CORRECCIÓN ---
+    // Esta es la ruta que faltaba para poder ver un recibo individual.
+    router.get('/:saleId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
+        try {
+            const { saleId } = req.params;
+            if (isNaN(parseInt(saleId, 10))) {
+                return res.status(400).json({ message: 'El ID de la venta debe ser un número válido.' });
+            }
+
+            const sale = await Sale.findByPk(saleId, {
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] },
+                    { model: User, as: 'assignedCollector', attributes: ['id', 'username'] }
+                ]
+            });
+
+            if (!sale) {
+                return res.status(404).json({ message: 'Venta no encontrada.' });
+            }
+
+            res.json(sale);
+        } catch (error) {
+            console.error('Error al obtener la venta:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+    // --- FIN DE LA CORRECCIÓN ---
+    
+    // ... (el resto de las rutas no cambian) ...
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId } = req.body;
         if (!clientId || !saleItems || !saleItems.length) {
@@ -184,6 +156,60 @@ const initSalePaymentRoutes = (models, sequelize) => {
             const updatedSale = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
             res.json({ message: 'Gestor asignado con éxito.', sale: updatedSale });
         } catch (error) {
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+
+    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
+        try {
+            const collectorId = req.user.userId;
+            const assignedSales = await Sale.findAll({
+                where: { 
+                    assignedCollectorId: collectorId, 
+                    isCredit: true, 
+                    status: { [Op.ne]: 'paid_off' } 
+                },
+                include: [
+                    { model: Client, as: 'client' },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments' , order: [['paymentDate', 'DESC']]}
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+
+            const today = moment().tz(TIMEZONE).startOf('day');
+            const groupedByClient = assignedSales.reduce((acc, sale) => {
+                const clientId = sale.client.id;
+                if (!acc[clientId]) {
+                    acc[clientId] = {
+                        client: sale.client.toJSON(),
+                        sales: [],
+                        hasOverdue: false
+                    };
+                }
+
+                const lastPaymentDate = sale.payments.length > 0 
+                    ? moment(sale.payments[0].paymentDate) 
+                    : moment(sale.saleDate);
+                const dueDate = moment(lastPaymentDate).tz(TIMEZONE).add(7, 'days').endOf('day');
+                
+                const saleJSON = sale.toJSON();
+                if (today.isAfter(dueDate)) {
+                    saleJSON.dynamicStatus = 'VENCIDO';
+                    acc[clientId].hasOverdue = true;
+                } else {
+                    saleJSON.dynamicStatus = 'AL_CORRIENTE';
+                }
+
+                acc[clientId].sales.push(saleJSON);
+                return acc;
+            }, {});
+
+            const result = Object.values(groupedByClient);
+            res.json(result);
+
+        } catch (error) {
+            console.error(error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
