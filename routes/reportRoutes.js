@@ -72,7 +72,7 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // RUTA para obtener el estado de cuenta del cliente (PERMISOS CORREGIDOS)
+    // RUTA para obtener el estado de cuenta del cliente
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         try {
@@ -94,7 +94,7 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // RUTA para obtener el análisis de riesgo del cliente (PERMISOS CORREGIDOS)
+    // RUTA para obtener el análisis de riesgo del cliente
     router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         try {
@@ -124,8 +124,33 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // --- INICIO DE LA CORRECCIÓN: RUTAS FALTANTES ---
+    // --- INICIO DE LA CORRECCIÓN ---
+    // Esta es la ruta que faltaba para solucionar el error 404.
     
+    // Ruta para obtener todos los créditos con saldo pendiente
+    router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const pendingCredits = await Sale.findAll({
+                where: {
+                    isCredit: true,
+                    balanceDue: { [Op.gt]: 0 }
+                },
+                include: [
+                    { model: Client, as: 'client', attributes: ['name', 'lastName'] },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', attributes: ['name'] }] },
+                    { model: Payment, as: 'payments', attributes: ['id'] }
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+            res.json(pendingCredits);
+        } catch (error) {
+            console.error('Error en /pending-credits:', error);
+            res.status(500).json({ message: 'Error interno del servidor al obtener créditos pendientes.' });
+        }
+    });
+
+    // --- FIN DE LA CORRECCIÓN ---
+
     // Ruta para obtener ventas en un rango de fechas
     router.get('/sales-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
@@ -219,10 +244,3 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
         }
     });
-
-    // --- FIN DE LA CORRECCIÓN ---
-
-    return router;
-};
-
-module.exports = initReportRoutes;
