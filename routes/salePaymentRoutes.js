@@ -7,7 +7,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 const moment = require('moment-timezone');
 
-let Sale, Client, Product, Payment, SaleItem, User, AuditLog; // Se añade AuditLog
+let Sale, Client, Product, Payment, SaleItem, User, AuditLog;
 const TIMEZONE = "America/Mexico_City";
 
 const initSalePaymentRoutes = (models, sequelize) => {
@@ -17,9 +17,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
     User = models.User;
-    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
-
-    // ... (la ruta GET / y GET /my-assigned no cambian) ...
+    AuditLog = models.AuditLog;
+    
+    // ... (las rutas GET /, GET /my-assigned, GET /:saleId, POST /, y PUT /:saleId/assign no cambian) ...
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -139,8 +139,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    // Ruta para crear una nueva venta
+    
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId } = req.body;
         if (!clientId || !saleItems || !saleItems.length) {
@@ -188,7 +187,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
             await t.commit();
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -197,7 +195,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     details: `Venta ID: ${newSale.id} para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             const result = await Sale.findByPk(newSale.id, { include: [{ all: true, nested: true }] });
             res.status(201).json(result);
@@ -207,7 +204,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta para asignar un gestor a una venta
     router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { saleId } = req.params;
         const { collectorId } = req.body;
@@ -224,7 +220,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
             const updatedSaleWithNewCollector = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
             const newCollector = updatedSaleWithNewCollector.assignedCollector?.username || 'Nadie';
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -233,7 +228,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     details: `Venta ID: ${saleId}. Cambio de: ${previousCollector} a: ${newCollector}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
             
             res.json({ message: 'Gestor asignado con éxito.', sale: updatedSaleWithNewCollector });
         } catch (error) {
@@ -241,7 +235,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta para registrar un pago (abono)
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
@@ -261,22 +254,75 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
             await sale.save();
             
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                  await AuditLog.create({
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'REGISTRÓ PAGO',
-                    details: `Monto: $${amount.toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`
+                    details: `Monto: $${parseFloat(amount).toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.status(201).json(newPayment);
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+
+    // --- INICIO DE LA NUEVA RUTA PARA ELIMINAR VENTAS ---
+    router.delete('/:saleId', authorizeRoles(['super_admin']), async (req, res) => {
+        const { saleId } = req.params;
+        if (isNaN(parseInt(saleId, 10))) {
+            return res.status(400).json({ message: 'El ID de la venta debe ser un número válido.' });
+        }
+
+        const t = await sequelize.transaction();
+        try {
+            // 1. Buscar la venta y sus artículos para saber qué stock restaurar
+            const saleToDelete = await Sale.findByPk(saleId, {
+                include: [{ model: SaleItem, as: 'saleItems' }],
+                transaction: t
+            });
+
+            if (!saleToDelete) {
+                await t.rollback();
+                return res.status(404).json({ message: 'Venta no encontrada.' });
+            }
+
+            // 2. Restaurar el stock de cada producto vendido
+            for (const item of saleToDelete.saleItems) {
+                await Product.increment('stock', {
+                    by: item.quantity,
+                    where: { id: item.productId },
+                    transaction: t
+                });
+            }
+
+            // 3. Eliminar la venta (gracias a 'onDelete: CASCADE', esto borrará los SaleItems y Payments)
+            const saleIdForLog = saleToDelete.id;
+            await saleToDelete.destroy({ transaction: t });
+
+            // 4. Si todo sale bien, confirmar la transacción
+            await t.commit();
+
+            // 5. Registrar en auditoría
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'ELIMINÓ VENTA',
+                    details: `Venta ID: ${saleIdForLog} eliminada. El stock de los productos ha sido restaurado.`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+
+            res.status(204).send(); // Éxito, sin contenido
+        } catch (error) {
+            await t.rollback();
+            console.error('Error al eliminar venta:', error);
+            res.status(500).json({ message: 'Error interno del servidor al eliminar la venta.' });
+        }
+    });
+    // --- FIN DE LA NUEVA RUTA ---
 
     return router;
 };
