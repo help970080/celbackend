@@ -20,6 +20,8 @@ let isRegistrationAllowed = false;
 sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos.');
+        // Usar { alter: true } en desarrollo si quieres que se actualicen las tablas sin borrarlas.
+        // Usar { force: false } en producción.
         return sequelize.sync({ force: false }); 
     })
     .then(async () => {
@@ -31,8 +33,11 @@ sequelize.authenticate()
         const allowedOrigins = [process.env.FRONTEND_URL, 'http://localhost:5173'];
         app.use(cors({
             origin: (origin, callback) => {
-                if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-                else callback(new Error('Acceso no permitido por CORS'));
+                if (!origin || allowedOrigins.includes(origin)) {
+                    callback(null, true);
+                } else {
+                    callback(new Error('Acceso no permitido por CORS'));
+                }
             }
         }));
         
@@ -41,12 +46,15 @@ sequelize.authenticate()
           next();
         });
 
-        // Montaje de rutas
+        // --- Montaje de rutas ---
+
+        // Rutas de Autenticación de Administradores
         const initAuthRoutes = require('./routes/authRoutes');
         app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed));
         
+        // Rutas de Módulos de Administración (Protegidas por authMiddleware)
         const initProductRoutes = require('./routes/productRoutes');
-        app.use('/api/products', initProductRoutes(models));
+        app.use('/api/products', authMiddleware, initProductRoutes(models));
         
         const initClientRoutes = require('./routes/clientRoutes');
         app.use('/api/clients', authMiddleware, initClientRoutes(models));
@@ -63,10 +71,16 @@ sequelize.authenticate()
         const initAuditRoutes = require('./routes/auditRoutes');
         app.use('/api/audit', authMiddleware, initAuditRoutes(models));
         
-        // --- INICIO: NUEVAS RUTAS PARA EL DASHBOARD VISUAL ---
         const initDashboardRoutes = require('./routes/dashboardRoutes');
         app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
-        // --- FIN: NUEVAS RUTAS PARA EL DASHBOARD VISUAL ---
+
+        // --- INICIO: NUEVAS RUTAS PARA EL PORTAL DE CLIENTES ---
+        const initClientAuthRoutes = require('./routes/clientAuthRoutes');
+        app.use('/api/client-auth', initClientAuthRoutes(models));
+
+        const initPortalRoutes = require('./routes/portalRoutes');
+        app.use('/api/portal', initPortalRoutes(models));
+        // --- FIN: NUEVAS RUTAS PARA EL PORTAL DE CLIENTES ---
         
         console.log('✅ Todas las rutas principales han sido montadas.');
         app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
