@@ -1,24 +1,25 @@
 const express = require('express');
 const router = express.Router();
 const authorizeRoles = require('../middleware/roleMiddleware');
-const { Op } = require('sequelize');
+const { Op } = require('sequelize'); // <-- ESTA LÍNEA ES LA CORRECCIÓN PRINCIPAL
 const ExcelJS = require('exceljs');
 const moment = require('moment-timezone');
 
-let Client, Sale, Payment, AuditLog; // Se añade AuditLog
+let Client, Sale, Payment, AuditLog;
 const TIMEZONE = "America/Mexico_City";
 
 const initClientRoutes = (models) => {
     Client = models.Client;
     Sale = models.Sale;
     Payment = models.Payment;
-    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
+    AuditLog = models.AuditLog;
 
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
             const whereClause = {};
             if (search) {
+                // Esta parte ahora funcionará correctamente porque 'Op' está definido
                 whereClause[Op.or] = [
                     { name: { [Op.iLike]: `%${search}%` } },
                     { lastName: { [Op.iLike]: `%${search}%` } },
@@ -36,6 +37,7 @@ const initClientRoutes = (models) => {
             });
             res.json({ totalItems: count, totalPages: Math.ceil(count / limitNum), currentPage: pageNum, clients: rows });
         } catch (error) {
+            console.error("Error en la ruta GET /api/clients:", error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
@@ -114,7 +116,6 @@ const initClientRoutes = (models) => {
         try {
             const newClient = await Client.create(req.body);
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -123,7 +124,6 @@ const initClientRoutes = (models) => {
                     details: `Cliente: ${newClient.name} ${newClient.lastName} (ID: ${newClient.id})`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.status(201).json(newClient);
         } catch (error) {
@@ -142,7 +142,6 @@ const initClientRoutes = (models) => {
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             await client.update(req.body);
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -151,7 +150,6 @@ const initClientRoutes = (models) => {
                     details: `Cliente: ${client.name} ${client.lastName} (ID: ${client.id})`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.json(client);
         } catch (error) {
@@ -168,10 +166,9 @@ const initClientRoutes = (models) => {
             const client = await Client.findByPk(id);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             
-            const clientNameForLog = `${client.name} ${client.lastName}`; // Guardar antes de eliminar
+            const clientNameForLog = `${client.name} ${client.lastName}`;
             await client.destroy();
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -180,7 +177,6 @@ const initClientRoutes = (models) => {
                     details: `Cliente: ${clientNameForLog} (ID: ${id})`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.status(204).send();
         } catch (error) {

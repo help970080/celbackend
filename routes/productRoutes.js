@@ -1,17 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const authMiddleware = require('../middleware/authMiddleware');
+const authMiddleware = require('../middleware/authMiddleware'); // Se importa el middleware
 const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 
-let Product, AuditLog; // Se añade AuditLog
+let Product, AuditLog;
 
 const initProductRoutes = (models) => {
     Product = models.Product;
-    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
+    AuditLog = models.AuditLog;
 
-    // ... (la ruta GET /version no cambia) ...
+    // RUTA DE PRUEBA DE VERSIÓN (PÚBLICA)
     router.get('/version', (req, res) => {
         res.status(200).json({ 
             version: '2.0.0-final-deployment-test', 
@@ -19,7 +19,8 @@ const initProductRoutes = (models) => {
         });
     });
 
-    // ... (la ruta GET / no cambia) ...
+    // RUTA PARA LISTAR PRODUCTOS (PÚBLICA - PARA EL CATÁLOGO)
+    // Nota: Esta ruta no lleva 'authMiddleware' para que sea accesible por todos.
     router.get('/', async (req, res) => {
         try {
             const { sortBy = 'createdAt', order = 'DESC', category, search, page = 1, limit = 10 } = req.query;
@@ -49,7 +50,7 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // ... (la ruta GET /export-excel no cambia) ...
+    // RUTA PARA EXPORTAR A EXCEL (PROTEGIDA)
     router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const productsToExport = await Product.findAll({ order: [['name', 'ASC']] });
@@ -92,7 +93,7 @@ const initProductRoutes = (models) => {
         }
     });
     
-    // RUTA PARA CREAR UN NUEVO PRODUCTO (POST)
+    // RUTA PARA CREAR UN NUEVO PRODUCTO (PROTEGIDA)
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
@@ -101,7 +102,6 @@ const initProductRoutes = (models) => {
             }
             const newProduct = await Product.create({ name, description, price, stock, imageUrls, category, brand });
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -110,7 +110,6 @@ const initProductRoutes = (models) => {
                     details: `Producto: ${newProduct.name} (ID: ${newProduct.id}), Precio: $${newProduct.price}, Stock: ${newProduct.stock}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.status(201).json(newProduct);
         } catch (error) {
@@ -119,7 +118,7 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // RUTA PARA ACTUALIZAR UN PRODUCTO (PUT)
+    // RUTA PARA ACTUALIZAR UN PRODUCTO (PROTEGIDA)
     router.put('/:id', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const { id } = req.params;
@@ -134,7 +133,6 @@ const initProductRoutes = (models) => {
             }
             const updatedProduct = await Product.findByPk(id);
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -143,7 +141,6 @@ const initProductRoutes = (models) => {
                     details: `Producto: ${updatedProduct.name} (ID: ${id})`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.json(updatedProduct);
         } catch (error) {
@@ -152,22 +149,20 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // RUTA PARA ELIMINAR UN PRODUCTO (DELETE)
+    // RUTA PARA ELIMINAR UN PRODUCTO (PROTEGIDA)
     router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const { id } = req.params;
             
-            // Se busca el producto ANTES de eliminarlo para poder registrar su nombre
             const productToDelete = await Product.findByPk(id);
             if (!productToDelete) {
                 return res.status(404).json({ message: 'Producto no encontrado.' });
             }
-            const productNameForLog = productToDelete.name; // Guardar el nombre
+            const productNameForLog = productToDelete.name;
 
             const deletedRows = await Product.destroy({ where: { id: id } });
             
             if (deletedRows > 0) {
-                // --- INICIO: REGISTRO DE AUDITORÍA ---
                 try {
                     await AuditLog.create({
                         userId: req.user.userId,
@@ -176,7 +171,6 @@ const initProductRoutes = (models) => {
                         details: `Producto: ${productNameForLog} (ID: ${id})`
                     });
                 } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-                // --- FIN: REGISTRO DE AUDITORÍA ---
             }
 
             res.status(204).send();

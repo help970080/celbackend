@@ -20,8 +20,6 @@ let isRegistrationAllowed = false;
 sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos.');
-        // Usar { alter: true } en desarrollo si quieres que se actualicen las tablas sin borrarlas.
-        // Usar { force: false } en producción.
         return sequelize.sync({ force: false }); 
     })
     .then(async () => {
@@ -48,14 +46,24 @@ sequelize.authenticate()
 
         // --- Montaje de rutas ---
 
-        // Rutas de Autenticación de Administradores
+        // Rutas públicas o con su propia autenticación
         const initAuthRoutes = require('./routes/authRoutes');
         app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed));
-        
-        // Rutas de Módulos de Administración (Protegidas por authMiddleware)
+
+        const initClientAuthRoutes = require('./routes/clientAuthRoutes');
+        app.use('/api/client-auth', initClientAuthRoutes(models));
+
+        const initPortalRoutes = require('./routes/portalRoutes');
+        app.use('/api/portal', initPortalRoutes(models));
+
+        // --- INICIO DE LA CORRECCIÓN ---
+        // Se elimina 'authMiddleware' de esta línea. La protección se manejará dentro de 'productRoutes.js'
+        // para permitir que la consulta del catálogo sea pública.
         const initProductRoutes = require('./routes/productRoutes');
-        app.use('/api/products', authMiddleware, initProductRoutes(models));
-        
+        app.use('/api/products', initProductRoutes(models));
+        // --- FIN DE LA CORRECCIÓN ---
+
+        // Rutas de Módulos de Administración (Protegidas por el middleware de admin)
         const initClientRoutes = require('./routes/clientRoutes');
         app.use('/api/clients', authMiddleware, initClientRoutes(models));
         
@@ -73,14 +81,6 @@ sequelize.authenticate()
         
         const initDashboardRoutes = require('./routes/dashboardRoutes');
         app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
-
-        // --- INICIO: NUEVAS RUTAS PARA EL PORTAL DE CLIENTES ---
-        const initClientAuthRoutes = require('./routes/clientAuthRoutes');
-        app.use('/api/client-auth', initClientAuthRoutes(models));
-
-        const initPortalRoutes = require('./routes/portalRoutes');
-        app.use('/api/portal', initPortalRoutes(models));
-        // --- FIN: NUEVAS RUTAS PARA EL PORTAL DE CLIENTES ---
         
         console.log('✅ Todas las rutas principales han sido montadas.');
         app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
