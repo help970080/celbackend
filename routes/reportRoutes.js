@@ -1,12 +1,14 @@
 // Archivo: routes/reportRoutes.js
+
 const express = require('express');
 const router = express.Router();
-// ... (otros requires no cambian) ...
-const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op, Sequelize } = require('sequelize');
 const moment = require('moment-timezone');
+const authorizeRoles = require('../middleware/roleMiddleware');
 
-let Sale, Client, Product, Payment, SaleItem;
+// --- INICIO DE LA CORRECCIÓN ---
+let Sale, Client, Product, Payment, SaleItem, User; // Se añade User
+// --- FIN DE LA CORRECCIÓN ---
 
 const TIMEZONE = "America/Mexico_City";
 
@@ -16,8 +18,11 @@ const initReportRoutes = (models) => {
     Product = models.Product;
     Payment = models.Payment;
     SaleItem = models.SaleItem;
+    // --- INICIO DE LA CORRECCIÓN ---
+    User = models.User; // Se asigna el modelo User
+    // --- FIN DE LA CORRECCIÓN ---
 
-    // ... (la ruta GET /summary no cambia) ...
+    // ... (todas las rutas existentes como /summary, /client-status-dashboard, etc., no cambian) ...
     router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const totalBalanceDue = await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
@@ -38,8 +43,6 @@ const initReportRoutes = (models) => {
         }
     });
 
-
-    // ... (la ruta GET /client-status-dashboard no cambia) ...
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const allCreditSales = await Sale.findAll({ where: { isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
@@ -75,8 +78,6 @@ const initReportRoutes = (models) => {
         }
     });
 
-
-    // --- INICIO DE LA CORRECCIÓN ---
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         if (isNaN(parseInt(clientId, 10))) {
@@ -132,9 +133,7 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    // --- FIN DE LA CORRECCIÓN ---
-
-    // ... (el resto de las rutas no cambian)
+    
     router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const pendingCredits = await Sale.findAll({
@@ -245,6 +244,53 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
         }
     });
+    
+    // --- INICIO DE LA CORRECCIÓN ---
+    // Nueva ruta para la cobranza de gestores
+    router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const { period = 'day', startDate, endDate } = req.query;
+            const whereClause = {};
+            if (startDate && endDate) {
+                whereClause.paymentDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+            }
+
+            const results = await Payment.findAll({
+                attributes: [
+                    [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), period],
+                    [Sequelize.col('sale.assignedCollector.username'), 'collectorName'],
+                    [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
+                    [Sequelize.fn('count', Sequelize.col('Payment.id')), 'count']
+                ],
+                include: [{
+                    model: Sale,
+                    as: 'sale',
+                    attributes: [], // No necesitamos columnas de la tabla de ventas
+                    include: [{
+                        model: User,
+                        as: 'assignedCollector',
+                        where: { role: 'collector_agent' }, // Solo de usuarios que son gestores
+                        attributes: [] // No necesitamos columnas de la tabla de usuarios
+                    }]
+                }],
+                where: whereClause,
+                group: [
+                    Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')),
+                    Sequelize.col('sale.assignedCollector.username')
+                ],
+                order: [
+                    [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), 'DESC'],
+                    [Sequelize.col('sale.assignedCollector.username'), 'ASC']
+                ],
+                raw: true
+            });
+            res.json(results);
+        } catch (error) {
+            console.error('Error en /collections-by-agent:', error);
+            res.status(500).json({ message: 'Error al obtener cobranza por gestor.' });
+        }
+    });
+    // --- FIN DE LA CORRECCIÓN ---
 
     return router;
 };
