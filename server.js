@@ -44,41 +44,27 @@ sequelize.authenticate()
           next();
         });
 
-        // --- Montaje de rutas ---
-
-        // Rutas públicas o con su propia autenticación
+        // Montaje de rutas
         const initAuthRoutes = require('./routes/authRoutes');
         app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed));
-
         const initClientAuthRoutes = require('./routes/clientAuthRoutes');
         app.use('/api/client-auth', initClientAuthRoutes(models));
-
         const initPortalRoutes = require('./routes/portalRoutes');
         app.use('/api/portal', initPortalRoutes(models));
-
-        // --- INICIO DE LA CORRECCIÓN ---
-        // Se elimina 'authMiddleware' de esta línea. La protección se manejará dentro de 'productRoutes.js'
-        // para permitir que la consulta del catálogo sea pública.
         const initProductRoutes = require('./routes/productRoutes');
-        app.use('/api/products', initProductRoutes(models));
-        // --- FIN DE LA CORRECCIÓN ---
-
-        // Rutas de Módulos de Administración (Protegidas por el middleware de admin)
+        app.use('/api/products', initProductRoutes(models)); // Middleware se aplica adentro
+        
+        // Rutas protegidas
         const initClientRoutes = require('./routes/clientRoutes');
         app.use('/api/clients', authMiddleware, initClientRoutes(models));
-        
         const initSalePaymentRoutes = require('./routes/salePaymentRoutes');
         app.use('/api/sales', authMiddleware, initSalePaymentRoutes(models, sequelize));
-        
         const initReportRoutes = require('./routes/reportRoutes');
         app.use('/api/reports', authMiddleware, initReportRoutes(models));
-        
         const initUserRoutes = require('./routes/userRoutes');
         app.use('/api/users', authMiddleware, initUserRoutes(models));
-
         const initAuditRoutes = require('./routes/auditRoutes');
         app.use('/api/audit', authMiddleware, initAuditRoutes(models));
-        
         const initDashboardRoutes = require('./routes/dashboardRoutes');
         app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
         
