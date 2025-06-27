@@ -44,16 +44,26 @@ sequelize.authenticate()
         // Montaje de rutas
         const initAuthRoutes = require('./routes/authRoutes');
         app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed));
+        
         const initProductRoutes = require('./routes/productRoutes');
         app.use('/api/products', initProductRoutes(models));
+        
         const initClientRoutes = require('./routes/clientRoutes');
         app.use('/api/clients', authMiddleware, initClientRoutes(models));
+        
         const initSalePaymentRoutes = require('./routes/salePaymentRoutes');
         app.use('/api/sales', authMiddleware, initSalePaymentRoutes(models, sequelize));
+        
         const initReportRoutes = require('./routes/reportRoutes');
         app.use('/api/reports', authMiddleware, initReportRoutes(models));
+        
         const initUserRoutes = require('./routes/userRoutes');
         app.use('/api/users', authMiddleware, initUserRoutes(models));
+
+        // --- INICIO: NUEVAS RUTAS ---
+        const initAuditRoutes = require('./routes/auditRoutes');
+        app.use('/api/audit', authMiddleware, initAuditRoutes(models));
+        // --- FIN: NUEVAS RUTAS ---
         
         console.log('✅ Todas las rutas principales han sido montadas.');
         app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
