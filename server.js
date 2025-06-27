@@ -21,10 +21,9 @@ sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos.');
 
-        // --- CAMBIO TEMPORAL: Usa 'alter: true' para actualizar la BD ---
-        // Esto añadirá las columnas que falten (como 'password') a tus tablas existentes sin borrar datos.
-        return sequelize.sync({ alter: true }); 
-        // --- FIN DEL CAMBIO TEMPORAL ---
+        // --- CAMBIO REVERTIDO: Regresamos a 'force: false' para operación normal ---
+        return sequelize.sync({ force: false }); 
+        // --- FIN DEL CAMBIO REVERTIDO ---
 
     })
     .then(async () => {
