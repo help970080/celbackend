@@ -7,7 +7,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 const moment = require('moment-timezone');
 
-let Sale, Client, Product, Payment, SaleItem, User;
+let Sale, Client, Product, Payment, SaleItem, User, AuditLog; // Se añade AuditLog
 const TIMEZONE = "America/Mexico_City";
 
 const initSalePaymentRoutes = (models, sequelize) => {
@@ -17,8 +17,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
     Payment = models.Payment;
     SaleItem = models.SaleItem;
     User = models.User;
-    
-    // Ruta para obtener TODAS las ventas (para el admin)
+    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
+
+    // ... (la ruta GET / y GET /my-assigned no cambian) ...
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -58,10 +59,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // --- INICIO DE LA CORRECCIÓN ---
-    // Se ha movido la ruta /my-assigned ANTES de la ruta /:saleId para evitar conflictos.
-
-    // RUTA GET /my-assigned: Para que el gestor vea sus propias ventas
     router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
         try {
             const collectorId = req.user.userId;
@@ -116,7 +113,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // RUTA GET /:saleId: Obtiene una venta individual por su ID
     router.get('/:saleId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         try {
             const { saleId } = req.params;
@@ -143,9 +139,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    // --- FIN DE LA CORRECCIÓN ---
-    
-    // ... (el resto de las rutas no cambian)
+
+    // Ruta para crear una nueva venta
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId } = req.body;
         if (!clientId || !saleItems || !saleItems.length) {
@@ -192,6 +187,18 @@ const initSalePaymentRoutes = (models, sequelize) => {
             }
 
             await t.commit();
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'CREÓ VENTA',
+                    details: `Venta ID: ${newSale.id} para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             const result = await Sale.findByPk(newSale.id, { include: [{ all: true, nested: true }] });
             res.status(201).json(result);
         } catch (error) {
@@ -200,23 +207,41 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+    // Ruta para asignar un gestor a una venta
     router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { saleId } = req.params;
         const { collectorId } = req.body;
         if (collectorId === undefined) return res.status(400).json({ message: 'Se requiere el ID del gestor.' });
         try {
-            const sale = await Sale.findByPk(saleId);
+            const sale = await Sale.findByPk(saleId, { include: [{model: User, as: 'assignedCollector'}] });
             if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
             if (!sale.isCredit) return res.status(400).json({ message: 'Solo se pueden asignar ventas a crédito.' });
+            
+            const previousCollector = sale.assignedCollector?.username || 'Nadie';
             sale.assignedCollectorId = collectorId === "null" ? null : parseInt(collectorId, 10);
             await sale.save();
-            const updatedSale = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
-            res.json({ message: 'Gestor asignado con éxito.', sale: updatedSale });
+            
+            const updatedSaleWithNewCollector = await Sale.findByPk(saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
+            const newCollector = updatedSaleWithNewCollector.assignedCollector?.username || 'Nadie';
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'ASIGNÓ GESTOR',
+                    details: `Venta ID: ${saleId}. Cambio de: ${previousCollector} a: ${newCollector}`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+            
+            res.json({ message: 'Gestor asignado con éxito.', sale: updatedSaleWithNewCollector });
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
+    // Ruta para registrar un pago (abono)
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
@@ -225,19 +250,33 @@ const initSalePaymentRoutes = (models, sequelize) => {
             if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
             if (!sale.isCredit) return res.status(400).json({ message: 'No se pueden registrar pagos a ventas de contado.' });
             if (sale.balanceDue <= 0) return res.status(400).json({ message: 'Esta venta ya no tiene saldo pendiente.' });
+            
             const newPayment = await Payment.create({ saleId: parseInt(saleId), amount: parseFloat(amount), paymentMethod: paymentMethod || 'cash', notes });
-            sale.balanceDue = parseFloat((sale.balanceDue - amount).toFixed(2));
-            if (sale.balanceDue <= 0) {
-                sale.status = 'paid_off';
-                sale.balanceDue = 0;
-            }
+            
+            let newBalance = sale.balanceDue - amount;
+            if (Math.abs(newBalance) < 0.01) { newBalance = 0; }
+            
+            sale.balanceDue = parseFloat(newBalance.toFixed(2));
+            if (sale.balanceDue <= 0) { sale.status = 'paid_off'; }
+
             await sale.save();
+            
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                 await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'REGISTRÓ PAGO',
+                    details: `Monto: $${amount.toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             res.status(201).json(newPayment);
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
 
     return router;
 };

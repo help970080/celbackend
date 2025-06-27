@@ -4,6 +4,7 @@ const ProductModel = require('./Product');
 const SaleModel = require('./Sale');
 const PaymentModel = require('./Payment');
 const SaleItemModel = require('./SaleItem');
+const AuditLogModel = require('./AuditLog'); // <-- AÑADIR IMPORTACIÓN
 
 module.exports = (sequelize) => {
     const User = UserModel(sequelize);
@@ -12,6 +13,7 @@ module.exports = (sequelize) => {
     const Sale = SaleModel(sequelize);
     const Payment = PaymentModel(sequelize);
     const SaleItem = SaleItemModel(sequelize);
+    const AuditLog = AuditLogModel(sequelize); // <-- AÑADIR INICIALIZACIÓN
 
     // --- ASOCIACIONES DEFINITIVAS ---
     Sale.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
@@ -29,5 +31,9 @@ module.exports = (sequelize) => {
     Sale.hasMany(Payment, { foreignKey: 'saleId', as: 'payments', onDelete: 'CASCADE' });
     Payment.belongsTo(Sale, { foreignKey: 'saleId', as: 'sale' });
 
-    return { User, Client, Product, Sale, Payment, SaleItem };
+    // --- NUEVA ASOCIACIÓN PARA AUDITORÍA ---
+    // Si un usuario es eliminado, su ID en los logs se vuelve NULO pero el log se conserva.
+    AuditLog.belongsTo(User, { foreignKey: 'userId', onDelete: 'SET NULL' });
+
+    return { User, Client, Product, Sale, Payment, SaleItem, AuditLog }; // <-- AÑADIR AuditLog
 };

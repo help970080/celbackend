@@ -1,23 +1,19 @@
-// Archivo: routes/clientRoutes.js
-
 const express = require('express');
 const router = express.Router();
-// ... (otros requires no cambian) ...
 const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 const moment = require('moment-timezone');
 
-
-let Client, Sale, Payment;
+let Client, Sale, Payment, AuditLog; // Se añade AuditLog
 const TIMEZONE = "America/Mexico_City";
 
 const initClientRoutes = (models) => {
     Client = models.Client;
     Sale = models.Sale;
     Payment = models.Payment;
+    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
 
-    // ... (la ruta GET / no cambia) ...
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -44,7 +40,6 @@ const initClientRoutes = (models) => {
         }
     });
 
-    // ... (la ruta GET /export-excel no cambia) ...
     router.get('/export-excel', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const clients = await Client.findAll({
@@ -101,8 +96,6 @@ const initClientRoutes = (models) => {
         }
     });
 
-
-    // --- INICIO DE LA CORRECCIÓN ---
     router.get('/:id', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { id } = req.params;
         if (isNaN(parseInt(id, 10))) {
@@ -116,12 +109,22 @@ const initClientRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    // --- FIN DE LA CORRECCIÓN ---
 
-    // ... (el resto de las rutas POST, PUT, DELETE no cambian sustancialmente, pero añadir la validación es buena práctica) ...
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const newClient = await Client.create(req.body);
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'CREÓ CLIENTE',
+                    details: `Cliente: ${newClient.name} ${newClient.lastName} (ID: ${newClient.id})`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             res.status(201).json(newClient);
         } catch (error) {
             if (error.name === 'SequelizeUniqueConstraintError') return res.status(400).json({ message: 'Ya existe un cliente con este email o teléfono.' });
@@ -138,6 +141,18 @@ const initClientRoutes = (models) => {
             const client = await Client.findByPk(id);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             await client.update(req.body);
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'ACTUALIZÓ CLIENTE',
+                    details: `Cliente: ${client.name} ${client.lastName} (ID: ${client.id})`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             res.json(client);
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
@@ -152,13 +167,26 @@ const initClientRoutes = (models) => {
         try {
             const client = await Client.findByPk(id);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
+            
+            const clientNameForLog = `${client.name} ${client.lastName}`; // Guardar antes de eliminar
             await client.destroy();
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'ELIMINÓ CLIENTE',
+                    details: `Cliente: ${clientNameForLog} (ID: ${id})`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             res.status(204).send();
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
 
     return router;
 };

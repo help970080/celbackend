@@ -1,4 +1,3 @@
-// VERSIÓN COMPLETA Y CORREGIDA
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
@@ -6,22 +5,21 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 
-let Product;
+let Product, AuditLog; // Se añade AuditLog
 
 const initProductRoutes = (models) => {
     Product = models.Product;
+    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
 
-    // --- RUTA DE PRUEBA DE VERSIÓN ---
-    // Su único propósito es confirmar que el despliegue fue exitoso.
+    // ... (la ruta GET /version no cambia) ...
     router.get('/version', (req, res) => {
         res.status(200).json({ 
             version: '2.0.0-final-deployment-test', 
             deployment_date: '2025-06-22' 
         });
     });
-    // --- FIN DE LA RUTA DE PRUEBA ---
 
-    // Ruta para listar productos con paginación y búsqueda (PÚBLICA)
+    // ... (la ruta GET / no cambia) ...
     router.get('/', async (req, res) => {
         try {
             const { sortBy = 'createdAt', order = 'DESC', category, search, page = 1, limit = 10 } = req.query;
@@ -51,7 +49,7 @@ const initProductRoutes = (models) => {
         }
     });
 
-    // RUTA PARA EXPORTAR A EXCEL - VERSIÓN FINAL ROBUSTA
+    // ... (la ruta GET /export-excel no cambia) ...
     router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const productsToExport = await Product.findAll({ order: [['name', 'ASC']] });
@@ -94,25 +92,26 @@ const initProductRoutes = (models) => {
         }
     });
     
-    // --- INICIO DE LAS RUTAS CORREGIDAS Y AGREGADAS ---
-
     // RUTA PARA CREAR UN NUEVO PRODUCTO (POST)
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']), async (req, res) => {
         try {
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
-            // Validación básica
             if (!name || !price || !stock) {
                 return res.status(400).json({ message: 'Nombre, precio y stock son campos obligatorios.' });
             }
-            const newProduct = await Product.create({
-                name,
-                description,
-                price,
-                stock,
-                imageUrls,
-                category,
-                brand
-            });
+            const newProduct = await Product.create({ name, description, price, stock, imageUrls, category, brand });
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'CREÓ PRODUCTO',
+                    details: `Producto: ${newProduct.name} (ID: ${newProduct.id}), Precio: $${newProduct.price}, Stock: ${newProduct.stock}`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             res.status(201).json(newProduct);
         } catch (error) {
             console.error('Error al crear producto:', error);
@@ -126,15 +125,7 @@ const initProductRoutes = (models) => {
             const { id } = req.params;
             const { name, description, price, stock, imageUrls, category, brand } = req.body;
             
-            const [updatedRows] = await Product.update({
-                name,
-                description,
-                price,
-                stock,
-                imageUrls,
-                category,
-                brand
-            }, {
+            const [updatedRows] = await Product.update({ name, description, price, stock, imageUrls, category, brand }, {
                 where: { id: id }
             });
 
@@ -142,6 +133,18 @@ const initProductRoutes = (models) => {
                 return res.status(404).json({ message: 'Producto no encontrado o no se realizaron cambios.' });
             }
             const updatedProduct = await Product.findByPk(id);
+
+            // --- INICIO: REGISTRO DE AUDITORÍA ---
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'ACTUALIZÓ PRODUCTO',
+                    details: `Producto: ${updatedProduct.name} (ID: ${id})`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            // --- FIN: REGISTRO DE AUDITORÍA ---
+
             res.json(updatedProduct);
         } catch (error) {
             console.error('Error al actualizar producto:', error);
@@ -153,20 +156,35 @@ const initProductRoutes = (models) => {
     router.delete('/:id', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const { id } = req.params;
-            const deletedRows = await Product.destroy({
-                where: { id: id }
-            });
-            if (deletedRows === 0) {
+            
+            // Se busca el producto ANTES de eliminarlo para poder registrar su nombre
+            const productToDelete = await Product.findByPk(id);
+            if (!productToDelete) {
                 return res.status(404).json({ message: 'Producto no encontrado.' });
             }
-            res.status(204).send(); // 204 No Content es la respuesta estándar para un DELETE exitoso
+            const productNameForLog = productToDelete.name; // Guardar el nombre
+
+            const deletedRows = await Product.destroy({ where: { id: id } });
+            
+            if (deletedRows > 0) {
+                // --- INICIO: REGISTRO DE AUDITORÍA ---
+                try {
+                    await AuditLog.create({
+                        userId: req.user.userId,
+                        username: req.user.username,
+                        action: 'ELIMINÓ PRODUCTO',
+                        details: `Producto: ${productNameForLog} (ID: ${id})`
+                    });
+                } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+                // --- FIN: REGISTRO DE AUDITORÍA ---
+            }
+
+            res.status(204).send();
         } catch (error) {
             console.error('Error al eliminar producto:', error);
             res.status(500).json({ message: 'Error interno del servidor al eliminar el producto.' });
         }
     });
-
-    // --- FIN DE LAS RUTAS CORREGIDAS Y AGREGADAS ---
 
     return router;
 };
