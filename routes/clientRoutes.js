@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authorizeRoles = require('../middleware/roleMiddleware');
-const { Op } = require('sequelize'); // <-- ESTA LÍNEA ES LA CORRECCIÓN PRINCIPAL
+const { Op } = require('sequelize'); // <-- LA LÍNEA CLAVE QUE SOLUCIONA EL ERROR
 const ExcelJS = require('exceljs');
 const moment = require('moment-timezone');
 
@@ -19,7 +19,6 @@ const initClientRoutes = (models) => {
             const { search, page, limit } = req.query;
             const whereClause = {};
             if (search) {
-                // Esta parte ahora funcionará correctamente porque 'Op' está definido
                 whereClause[Op.or] = [
                     { name: { [Op.iLike]: `%${search}%` } },
                     { lastName: { [Op.iLike]: `%${search}%` } },
@@ -42,6 +41,7 @@ const initClientRoutes = (models) => {
         }
     });
 
+    // ... (el resto del archivo no tiene cambios y permanece igual) ...
     router.get('/export-excel', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const clients = await Client.findAll({
@@ -183,6 +183,7 @@ const initClientRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
+
 
     return router;
 };
