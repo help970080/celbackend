@@ -21,11 +21,11 @@ sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos.');
 
-        // --- ¡CAMBIO IMPORTANTE! ---
-        // 'force: true' borrará y recreará las tablas. Úsalo con extrema precaución.
-        // Esto solucionará la desincronización del esquema, pero eliminará todos los datos existentes.
-        return sequelize.sync({ force: true }); 
-        // --- FIN DEL CAMBIO ---
+        // --- CONFIGURACIÓN SEGURA PARA PRODUCCIÓN ---
+        // 'force: false' asegura que las tablas existentes y sus datos no se borren.
+        // Esta es la configuración que debes usar siempre en producción.
+        return sequelize.sync({ force: false }); 
+        // --- FIN DE LA CONFIGURACIÓN SEGURA ---
 
     })
     .then(async () => {
