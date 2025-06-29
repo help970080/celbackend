@@ -6,11 +6,26 @@ const { Op, Sequelize } = require('sequelize');
 const moment = require('moment-timezone');
 const authorizeRoles = require('../middleware/roleMiddleware');
 
-// --- INICIO DE LA CORRECCIÓN ---
-let Sale, Client, Product, Payment, SaleItem, User; // Se añade User
-// --- FIN DE LA CORRECCIÓN ---
-
+let Sale, Client, Product, Payment, SaleItem, User;
 const TIMEZONE = "America/Mexico_City";
+
+// --- INICIO DE LA MODIFICACIÓN ---
+// Función helper para calcular la próxima fecha de vencimiento dinámicamente
+const getNextDueDate = (lastPaymentDate, frequency) => {
+    const baseDate = moment(lastPaymentDate).tz(TIMEZONE);
+    switch (frequency) {
+        case 'daily':
+            return baseDate.add(1, 'days').endOf('day');
+        case 'fortnightly':
+            return baseDate.add(15, 'days').endOf('day');
+        case 'monthly':
+            return baseDate.add(1, 'months').endOf('day');
+        case 'weekly':
+        default:
+            return baseDate.add(7, 'days').endOf('day');
+    }
+};
+// --- FIN DE LA MODIFICACIÓN ---
 
 const initReportRoutes = (models) => {
     Sale = models.Sale;
@@ -18,11 +33,100 @@ const initReportRoutes = (models) => {
     Product = models.Product;
     Payment = models.Payment;
     SaleItem = models.SaleItem;
-    // --- INICIO DE LA CORRECCIÓN ---
-    User = models.User; // Se asigna el modelo User
-    // --- FIN DE LA CORRECCIÓN ---
+    User = models.User;
 
-    // ... (todas las rutas existentes como /summary, /client-status-dashboard, etc., no cambian) ...
+    // --- INICIO DE LA MODIFICACIÓN ---
+    // Ruta actualizada para el dashboard de estado de clientes
+    router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const allCreditSales = await Sale.findAll({ 
+                where: { isCredit: true }, 
+                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }] 
+            });
+
+            let clientsStatus = { alCorriente: new Set(), porVencer: new Set(), vencidos: new Set(), pagados: new Set() };
+            const today = moment().tz(TIMEZONE).startOf('day');
+
+            for (const sale of allCreditSales) {
+                if (sale.balanceDue <= 0) {
+                    clientsStatus.pagados.add(sale.clientId);
+                    continue;
+                }
+                const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
+                
+                // Usamos la nueva función helper
+                const nextPaymentDueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
+
+                if (nextPaymentDueDate.isBefore(today)) {
+                    clientsStatus.vencidos.add(sale.clientId);
+                } else if (nextPaymentDueDate.diff(today, 'days') < 7) { // "Por vencer" sigue siendo un buen indicador a 7 días
+                    clientsStatus.porVencer.add(sale.clientId);
+                } else {
+                    clientsStatus.alCorriente.add(sale.clientId);
+                }
+            }
+            // Lógica para evitar duplicados en los status
+            clientsStatus.vencidos.forEach(id => { clientsStatus.porVencer.delete(id); clientsStatus.alCorriente.delete(id); });
+            clientsStatus.porVencer.forEach(id => clientsStatus.alCorriente.delete(id));
+
+            res.json({
+                alCorriente: clientsStatus.alCorriente.size,
+                porVencer: clientsStatus.porVencer.size,
+                vencidos: clientsStatus.vencidos.size,
+                pagados: clientsStatus.pagados.size,
+                totalActivos: clientsStatus.alCorriente.size + clientsStatus.porVencer.size + clientsStatus.vencidos.size
+            });
+        } catch (error) {
+            console.error('Error en /client-status-dashboard:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+
+    // La ruta de riesgo también se actualiza
+    router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
+        const { clientId } = req.params;
+        if (isNaN(parseInt(clientId, 10))) {
+            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+        }
+        try {
+            const allCreditSales = await Sale.findAll({ 
+                where: { clientId, isCredit: true }, 
+                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }] 
+            });
+
+            let riskCategory = 'BAJO';
+            let riskDetails = 'No hay datos de crédito o todas las deudas están saldadas.';
+
+            if (allCreditSales.some(s => s.balanceDue > 0)) {
+                const today = moment().tz(TIMEZONE).startOf('day');
+                const hasOverdueSale = allCreditSales.some(sale => {
+                    if (sale.balanceDue > 0) {
+                        const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
+                        // Usamos la nueva función helper
+                        const dueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
+                        return dueDate.isBefore(today);
+                    }
+                    return false;
+                });
+
+                if (hasOverdueSale) {
+                    riskCategory = 'ALTO';
+                    riskDetails = 'Tiene una o más ventas a crédito vencidas.';
+                } else {
+                    riskCategory = 'BAJO';
+                    riskDetails = 'Sus pagos están al corriente.';
+                }
+            }
+            res.json({ riskCategory, riskDetails });
+        } catch (error) {
+            console.error('Error en /client-risk:', error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+    // --- FIN DE LA MODIFICACIÓN ---
+
+
+    // (El resto de las rutas no necesitan cambios)
     router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const totalBalanceDue = await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
@@ -42,42 +146,7 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        try {
-            const allCreditSales = await Sale.findAll({ where: { isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
-            let clientsStatus = { alCorriente: new Set(), porVencer: new Set(), vencidos: new Set(), pagados: new Set() };
-            const today = moment().tz(TIMEZONE).startOf('day');
-            for (const sale of allCreditSales) {
-                if (sale.balanceDue <= 0) {
-                    clientsStatus.pagados.add(sale.clientId);
-                    continue;
-                }
-                const lastPaymentDate = sale.payments.length > 0 ? moment(sale.payments.sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate))[0].paymentDate) : moment(sale.saleDate);
-                const nextPaymentDueDate = moment(lastPaymentDate).tz(TIMEZONE).add(7, 'days').startOf('day');
-                if (nextPaymentDueDate.isBefore(today)) {
-                    clientsStatus.vencidos.add(sale.clientId);
-                } else if (nextPaymentDueDate.diff(today, 'days') < 7) {
-                    clientsStatus.porVencer.add(sale.clientId);
-                } else {
-                    clientsStatus.alCorriente.add(sale.clientId);
-                }
-            }
-            clientsStatus.vencidos.forEach(id => { clientsStatus.porVencer.delete(id); clientsStatus.alCorriente.delete(id); });
-            clientsStatus.porVencer.forEach(id => clientsStatus.alCorriente.delete(id));
-            res.json({
-                alCorriente: clientsStatus.alCorriente.size,
-                porVencer: clientsStatus.porVencer.size,
-                vencidos: clientsStatus.vencidos.size,
-                pagados: clientsStatus.pagados.size,
-                totalActivos: clientsStatus.alCorriente.size + clientsStatus.porVencer.size + clientsStatus.vencidos.size
-            });
-        } catch (error) {
-            console.error('Error en /client-status-dashboard:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
-        }
-    });
-
+    
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         if (isNaN(parseInt(clientId, 10))) {
@@ -98,38 +167,6 @@ const initReportRoutes = (models) => {
             res.json({ client, sales, totalClientBalanceDue: parseFloat(totalClientBalanceDue.toFixed(2)) });
         } catch (error) {
             console.error('Error en /client-statement:', error);
-            res.status(500).json({ message: 'Error interno del servidor.' });
-        }
-    });
-
-    router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
-        const { clientId } = req.params;
-        if (isNaN(parseInt(clientId, 10))) {
-            return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
-        }
-        try {
-            const allCreditSales = await Sale.findAll({ where: { clientId, isCredit: true }, include: [{ model: Payment, as: 'payments' }] });
-            let riskCategory = 'BAJO';
-            let riskDetails = 'No hay datos de crédito o todas las deudas están saldadas.';
-            if (allCreditSales.length > 0) {
-                const today = moment().tz(TIMEZONE).startOf('day');
-                const hasOverdueSale = allCreditSales.some(sale => {
-                    if (sale.balanceDue > 0) {
-                        const lastPaymentDate = sale.payments.length > 0 ? moment(sale.payments.sort((a,b) => new Date(b.paymentDate) - new Date(a.paymentDate))[0].paymentDate) : moment(sale.saleDate);
-                        return moment(lastPaymentDate).tz(TIMEZONE).add(8, 'days').isBefore(today);
-                    }
-                    return false;
-                });
-                if (hasOverdueSale) {
-                    riskCategory = 'ALTO';
-                    riskDetails = 'Tiene una o más ventas a crédito vencidas.';
-                } else {
-                    riskDetails = 'Sus pagos están al corriente.';
-                }
-            }
-            res.json({ riskCategory, riskDetails });
-        } catch (error) {
-            console.error('Error en /client-risk:', error);
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
@@ -245,8 +282,6 @@ const initReportRoutes = (models) => {
         }
     });
     
-    // --- INICIO DE LA CORRECCIÓN ---
-    // Nueva ruta para la cobranza de gestores
     router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
@@ -265,12 +300,12 @@ const initReportRoutes = (models) => {
                 include: [{
                     model: Sale,
                     as: 'sale',
-                    attributes: [], // No necesitamos columnas de la tabla de ventas
+                    attributes: [],
                     include: [{
                         model: User,
                         as: 'assignedCollector',
-                        where: { role: 'collector_agent' }, // Solo de usuarios que son gestores
-                        attributes: [] // No necesitamos columnas de la tabla de usuarios
+                        where: { role: 'collector_agent' },
+                        attributes: []
                     }]
                 }],
                 where: whereClause,
@@ -290,7 +325,6 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error al obtener cobranza por gestor.' });
         }
     });
-    // --- FIN DE LA CORRECCIÓN ---
 
     return router;
 };
