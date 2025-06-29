@@ -21,9 +21,11 @@ sequelize.authenticate()
     .then(() => {
         console.log('✅ Conexión exitosa a la base de datos.');
 
-        // --- CAMBIO REVERTIDO: Regresamos a 'force: false' para operación normal ---
-        return sequelize.sync({ force: false }); 
-        // --- FIN DEL CAMBIO REVERTIDO ---
+        // --- ¡CAMBIO IMPORTANTE! ---
+        // 'force: true' borrará y recreará las tablas. Úsalo con extrema precaución.
+        // Esto solucionará la desincronización del esquema, pero eliminará todos los datos existentes.
+        return sequelize.sync({ force: true }); 
+        // --- FIN DEL CAMBIO ---
 
     })
     .then(async () => {
