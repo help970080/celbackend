@@ -4,7 +4,7 @@
   "description": "Backend para CelExpress Pro con Express, Sequelize y PostgreSQL.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "pm2-runtime start server.js --name celbackend",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -20,6 +20,7 @@
     "moment-timezone": "^0.5.45",
     "pg": "^8.12.0",
     "pg-hstore": "^2.3.4",
+    "pm2": "^6.0.8",
     "sequelize": "^6.37.3",
     "sqlite3": "^5.1.7"
   },
