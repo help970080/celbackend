@@ -4,7 +4,7 @@
   "description": "Backend para CelExpress Pro con Express, Sequelize y PostgreSQL.",
   "main": "server.js",
   "scripts": {
-    "start": "./node_modules/.bin/pm2-runtime start server.js --name celbackend",
+   "start": "node ./node_modules/pm2/bin/pm2-runtime start server.js --name celbackend",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
