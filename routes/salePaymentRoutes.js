@@ -1,4 +1,4 @@
-// Archivo: routes/salePaymentRoutes.js (Versión Final, Optimizada y Completa)
+// Archivo: routes/salePaymentRoutes.js (Versión Final Definitiva)
 
 const express = require('express');
 const router = express.Router();
@@ -20,7 +20,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
     User = models.User;
     AuditLog = models.AuditLog;
 
-    // --- OPTIMIZACIÓN 1: RUTA GET / PARA CARGA RÁPIDA DE LA LISTA ---
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { search, page, limit } = req.query;
@@ -36,10 +35,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
             const sales = await Sale.findAll({
                 where: { id: { [Op.in]: saleIds } },
                 include: [
-                    { model: Client, as: 'client' },
-                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
-                    { model: Payment, as: 'payments' },
-                    { model: User, as: 'assignedCollector', attributes: ['id', 'username'] }
+                    { model: Client, as: 'client' }, { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments' }, { model: User, as: 'assignedCollector', attributes: ['id', 'username'] }
                 ],
                 order: [['saleDate', 'DESC']],
             });
@@ -50,7 +47,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
     
-    // --- NUEVA FUNCIONALIDAD: EXPORTAR A EXCEL (EN ORDEN CORRECTO) ---
     router.get('/export-excel', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const sales = await Sale.findAll({ include: [ { model: Client, as: 'client', attributes: ['name', 'lastName'] }, { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', attributes: ['name'] }] }, { model: User, as: 'assignedCollector', attributes: ['username'] } ], order: [['saleDate', 'DESC']] });
@@ -68,10 +64,29 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // --- RUTA PARA COBRANZAS DEL GESTOR (SIN CAMBIOS) ---
-    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => { /* ... tu código de respaldo ... */ });
+    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
+        try {
+            const collectorId = req.user.userId;
+            const assignedSales = await Sale.findAll({ where: { assignedCollectorId: collectorId, isCredit: true, status: { [Op.ne]: 'paid_off' } }, include: [ { model: Client, as: 'client' }, { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }, { model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] } ], order: [['saleDate', 'ASC']] });
+            const today = moment().tz(TIMEZONE).startOf('day');
+            const getNextDueDate = (lastPaymentDate, frequency) => { const baseDate = moment(lastPaymentDate).tz(TIMEZONE); switch (frequency) { case 'daily': return baseDate.add(1, 'days').endOf('day'); case 'fortnightly': return baseDate.add(15, 'days').endOf('day'); case 'monthly': return baseDate.add(1, 'months').endOf('day'); default: return baseDate.add(7, 'days').endOf('day'); } };
+            const groupedByClient = assignedSales.reduce((acc, sale) => {
+                const clientId = sale.client.id;
+                if (!acc[clientId]) acc[clientId] = { client: sale.client.toJSON(), sales: [], hasOverdue: false };
+                const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
+                const dueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
+                const saleJSON = sale.toJSON();
+                if (today.isAfter(dueDate)) { saleJSON.dynamicStatus = 'VENCIDO'; acc[clientId].hasOverdue = true; } else { saleJSON.dynamicStatus = 'AL_CORRIENTE'; }
+                acc[clientId].sales.push(saleJSON);
+                return acc;
+            }, {});
+            res.json(Object.values(groupedByClient));
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
 
-    // --- RUTA PARA OBTENER UNA VENTA (RESTAURADA) ---
     router.get('/:saleId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         try {
             const { saleId } = req.params;
@@ -84,8 +99,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-
-    // --- OPTIMIZACIÓN 2: RUTA POST / PARA REGISTRO RÁPIDO DE VENTAS ---
+    
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId, paymentFrequency, numberOfPayments } = req.body;
         if (!clientId || !saleItems || !Array.isArray(saleItems) || saleItems.length === 0) return res.status(400).json({ message: 'Cliente y al menos un producto son obligatorios.' });
@@ -137,7 +151,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // --- OPTIMIZACIÓN 3: RUTA POST PAGOS CON TRANSACCIÓN DE SEGURIDAD ---
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
@@ -167,7 +180,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // --- RUTA DELETE CON TRANSACCIÓN (DE TU RESPALDO) ---
     router.delete('/:saleId', authorizeRoles(['super_admin']), async (req, res) => {
         const { saleId } = req.params;
         const t = await sequelize.transaction();
@@ -189,8 +201,26 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => { /* ... tu código de respaldo ... */ });
-
+    router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+       if (req.body.collectorId === undefined) return res.status(400).json({ message: 'Se requiere el ID del gestor.' });
+        try {
+            const sale = await Sale.findByPk(req.params.saleId, { include: [{model: User, as: 'assignedCollector'}] });
+            if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
+            if (!sale.isCredit) return res.status(400).json({ message: 'Solo se pueden asignar ventas a crédito.' });
+            const previousCollector = sale.assignedCollector?.username || 'Nadie';
+            sale.assignedCollectorId = req.body.collectorId === "null" ? null : parseInt(req.body.collectorId, 10);
+            await sale.save();
+            const updatedSaleWithNewCollector = await Sale.findByPk(req.params.saleId, { include: [{ model: User, as: 'assignedCollector', attributes: ['id', 'username'] }] });
+            const newCollector = updatedSaleWithNewCollector.assignedCollector?.username || 'Nadie';
+            try {
+                await AuditLog.create({ userId: req.user.userId, username: req.user.username, action: 'ASIGNÓ GESTOR', details: `Venta ID: ${req.params.saleId}. Cambio de: ${previousCollector} a: ${newCollector}` });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+            res.json({ message: 'Gestor asignado con éxito.', sale: updatedSaleWithNewCollector });
+        } catch (error) {
+            res.status(500).json({ message: 'Error interno del servidor.' });
+        }
+    });
+    
     return router;
 };
 

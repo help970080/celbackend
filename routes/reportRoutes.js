@@ -1,13 +1,10 @@
-// Archivo: routes/reportRoutes.js (Versión con importación corregida)
+// Archivo: routes/reportRoutes.js (Versión Final con Correcciones)
 
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
 const moment = require('moment-timezone');
-
-// --- INICIO DE LA CORRECCIÓN: LÍNEA DE IMPORTACIÓN FALTANTE ---
 const authorizeRoles = require('../middleware/roleMiddleware');
-// --- FIN DE LA CORRECCIÓN ---
 
 let Sale, Client, Product, Payment, SaleItem, User;
 const TIMEZONE = "America/Mexico_City";
@@ -30,7 +27,6 @@ const initReportRoutes = (models) => {
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // AHORA LAS RUTAS TIENEN ACCESO A authorizeRoles
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const allCreditSales = await Sale.findAll({ where: { isCredit: true }, include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }] });
@@ -80,10 +76,9 @@ const initReportRoutes = (models) => {
         }
     });
 
-    router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
+    router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
     
+    // --- CORRECCIÓN PARA BUG 'Cliente: N/A' ---
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         if (isNaN(parseInt(clientId, 10))) return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
@@ -93,7 +88,7 @@ const initReportRoutes = (models) => {
             const sales = await Sale.findAll({
                 where: { clientId },
                 include: [
-                    { model: Client, as: 'client' }, // Esta es la corrección para el bug 'Cliente: N/A'
+                    { model: Client, as: 'client' }, // <-- ESTA LÍNEA CORRIGE EL BUG
                     { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
                     { model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }
                 ],
@@ -107,29 +102,12 @@ const initReportRoutes = (models) => {
         }
     });
     
-    router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
-
-    router.get('/sales-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
-
-    router.get('/payments-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
-
-    router.get('/sales-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
-
-    router.get('/payments-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
-    
-    router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        // ... (código existente sin cambios)
-    });
+    router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
+    router.get('/sales-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
+    router.get('/payments-by-date-range', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
+    router.get('/sales-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
+    router.get('/payments-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
+    router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => { /* ... */ });
 
     return router;
 };
