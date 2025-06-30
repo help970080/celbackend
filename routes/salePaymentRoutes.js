@@ -1,4 +1,4 @@
-// Archivo: routes/salePaymentRoutes.js (Versión con Orden de Rutas Corregido)
+// Archivo: routes/salePaymentRoutes.js (Versión con Creación de Venta Optimizada)
 
 const express = require('express');
 const router = express.Router();
@@ -20,141 +20,110 @@ const initSalePaymentRoutes = (models, sequelize) => {
     User = models.User;
     AuditLog = models.AuditLog;
     
-    // Ruta principal para obtener la lista de ventas
-    router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+    // --- INICIO DE LA MODIFICACIÓN: RUTA POST / OPTIMIZADA ---
+    router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+        const { clientId, saleItems, isCredit, downPayment, assignedCollectorId, paymentFrequency, numberOfPayments } = req.body;
+
+        if (!clientId || !saleItems || !saleItems.length) {
+            return res.status(400).json({ message: 'Cliente y productos son obligatorios.' });
+        }
+        const t = await sequelize.transaction();
         try {
-            const { search, page, limit } = req.query;
-            const pageNum = parseInt(page, 10) || 1;
-            const limitNum = parseInt(limit, 10) || 10;
-            const offset = (pageNum - 1) * limitNum;
+            const client = await Client.findByPk(clientId, { transaction: t });
+            if (!client) throw new Error('Cliente no encontrado.');
 
-            const baseOptions = {
-                where: {},
-                order: [['saleDate', 'DESC']],
-                limit: limitNum,
-                offset: offset
-            };
-
-            if (search) {
-                baseOptions.include = [{
-                    model: Client,
-                    as: 'client',
-                    where: {
-                        [Op.or]: [
-                            { name: { [Op.iLike]: `%${search}%` } },
-                            { lastName: { [Op.iLike]: `%${search}%` } }
-                        ]
-                    },
-                    attributes: []
-                }];
+            if (isCredit && assignedCollectorId) {
+                const collector = await User.findByPk(assignedCollectorId, { transaction: t });
+                if (!collector) throw new Error(`El gestor con ID ${assignedCollectorId} no existe.`);
             }
 
-            const { count, rows: salesWithIds } = await Sale.findAndCountAll(baseOptions);
-            const saleIds = salesWithIds.map(sale => sale.id);
+            let totalAmount = 0;
+            const saleItemsToCreate = [];
 
-            const sales = await Sale.findAll({
-                where: { id: { [Op.in]: saleIds } },
-                include: [
-                    { model: Client, as: 'client' },
-                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
-                    { model: User, as: 'assignedCollector', attributes: ['id', 'username'] }
-                ],
-                order: [['saleDate', 'DESC']],
-            });
-
-            res.json({
-                totalItems: count,
-                totalPages: Math.ceil(count / limitNum),
-                currentPage: pageNum,
-                sales: sales
-            });
-        } catch (error) {
-            console.error('Error al obtener ventas:', error);
-            res.status(500).json({ message: 'Error interno del servidor al obtener ventas.' });
-        }
-    });
-
-    // --- INICIO DE LA MODIFICACIÓN: RUTA MOVIDA A UNA POSICIÓN SUPERIOR ---
-    // Las rutas específicas deben ir ANTES que las rutas dinámicas (con :params)
-    router.get('/export-excel', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        try {
-            const sales = await Sale.findAll({
-                include: [
-                    { model: Client, as: 'client', attributes: ['name', 'lastName'] },
-                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', attributes: ['name'] }] },
-                    { model: User, as: 'assignedCollector', attributes: ['username'] }
-                ],
-                order: [['saleDate', 'DESC']]
-            });
-
-            const workbook = new ExcelJS.Workbook();
-            const worksheet = workbook.addWorksheet('Reporte de Ventas');
-
-            worksheet.columns = [
-                { header: 'ID Venta', key: 'id', width: 10 },
-                { header: 'Fecha', key: 'saleDate', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } },
-                { header: 'Cliente', key: 'clientName', width: 30 },
-                { header: 'Productos', key: 'products', width: 50 },
-                { header: 'Monto Total', key: 'totalAmount', width: 15, style: { numFmt: '"$"#,##0.00' } },
-                { header: 'Tipo', key: 'type', width: 15 },
-                { header: 'Enganche', key: 'downPayment', width: 15, style: { numFmt: '"$"#,##0.00' } },
-                { header: 'Saldo Pendiente', key: 'balanceDue', width: 15, style: { numFmt: '"$"#,##0.00' } },
-                { header: 'Estado', key: 'status', width: 20 },
-                { header: 'Gestor Asignado', key: 'collector', width: 25 },
-            ];
-
-            sales.forEach(sale => {
-                worksheet.addRow({
-                    id: sale.id,
-                    saleDate: moment(sale.saleDate).tz(TIMEZONE).toDate(),
-                    clientName: sale.client ? `${sale.client.name} ${sale.client.lastName}` : 'N/A',
-                    products: sale.saleItems.map(item => `${item.quantity}x ${item.product.name}`).join(', '),
-                    totalAmount: sale.totalAmount,
-                    type: sale.isCredit ? 'Crédito' : 'Contado',
-                    downPayment: sale.downPayment,
-                    balanceDue: sale.balanceDue,
-                    status: sale.status.replace('_', ' '),
-                    collector: sale.assignedCollector ? sale.assignedCollector.username : 'Sin Asignar',
+            for (const item of saleItems) {
+                const product = await Product.findByPk(item.productId, { transaction: t, lock: true });
+                if (!product || product.stock < item.quantity) {
+                    throw new Error(`Stock insuficiente para ${product?.name || 'producto desconocido'}. Disponible: ${product?.stock || 0}`);
+                }
+                
+                totalAmount += product.price * item.quantity;
+                
+                // Se añade el producto a la lista para crear el SaleItem
+                saleItemsToCreate.push({ 
+                    productId: item.productId, 
+                    quantity: item.quantity, 
+                    priceAtSale: product.price 
                 });
-            });
 
-            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', 'attachment; filename="Reporte_Ventas.xlsx"');
-            await workbook.xlsx.write(res);
-            res.end();
+                // Se descuenta el stock de forma eficiente aquí mismo
+                await Product.decrement('stock', {
+                    by: item.quantity,
+                    where: { id: item.productId },
+                    transaction: t
+                });
+            }
+            
+            const saleData = { clientId, totalAmount, isCredit: !!isCredit, status: isCredit ? 'pending_credit' : 'completed', assignedCollectorId: isCredit && assignedCollectorId ? parseInt(assignedCollectorId) : null };
+            
+            if (isCredit) {
+                const downPaymentFloat = parseFloat(downPayment);
+                const numPaymentsInt = parseInt(numberOfPayments, 10);
 
+                if (isNaN(downPaymentFloat) || downPaymentFloat < 0 || downPaymentFloat > totalAmount) throw new Error('El enganche es inválido.');
+                if (isNaN(numPaymentsInt) || numPaymentsInt <= 0) throw new Error('El número de pagos debe ser mayor a cero.');
+
+                const balance = totalAmount - downPaymentFloat;
+                
+                Object.assign(saleData, { 
+                    downPayment: downPaymentFloat, 
+                    balanceDue: balance, 
+                    paymentFrequency: paymentFrequency || 'weekly',
+                    numberOfPayments: numPaymentsInt,
+                    weeklyPaymentAmount: parseFloat((balance / numPaymentsInt).toFixed(2))
+                });
+            } else {
+                Object.assign(saleData, { downPayment: totalAmount, balanceDue: 0 });
+            }
+
+            const newSale = await Sale.create(saleData, { transaction: t });
+            
+            const finalSaleItems = saleItemsToCreate.map(item => ({ ...item, saleId: newSale.id }));
+            await SaleItem.bulkCreate(finalSaleItems, { transaction: t });
+            
+            // El bucle ineficiente de 'productUpdates' ha sido eliminado.
+
+            await t.commit();
+
+            try {
+                await AuditLog.create({
+                    userId: req.user.userId,
+                    username: req.user.username,
+                    action: 'CREÓ VENTA',
+                    details: `Venta ID: ${newSale.id} para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}`
+                });
+            } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
+
+            const result = await Sale.findByPk(newSale.id, { include: [{ all: true, nested: true }] });
+            res.status(201).json(result);
         } catch (error) {
-            console.error('Error al exportar ventas a Excel:', error);
-            res.status(500).json({ message: 'Error interno del servidor al generar el reporte.' });
+            await t.rollback();
+            console.error("Error al crear la venta:", error);
+            res.status(400).json({ message: error.message || 'Error interno del servidor.' });
         }
     });
     // --- FIN DE LA MODIFICACIÓN ---
 
-    router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
-        // ...código sin cambios...
-    });
+    // El resto de las rutas (GET, PUT, DELETE, etc.) permanecen igual que en la versión anterior.
+    // ... (pega aquí el resto de las rutas del archivo `salePaymentRoutes.js` que ya tenías)
+    router.get('/', /* ... */);
+    router.get('/export-excel', /* ... */);
+    router.get('/my-assigned', /* ... */);
+    router.get('/:saleId', /* ... */);
+    router.put('/:saleId/assign', /* ... */);
+    router.post('/:saleId/payments', /* ... */);
+    router.delete('/:saleId', /* ... */);
 
-    // Esta ruta ahora está DESPUÉS de /export-excel, por lo que no habrá conflicto
-    router.get('/:saleId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
-        // ...código sin cambios...
-    });
-    
-    router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-        // ...código sin cambios...
-    });
 
-    router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-       // ...código sin cambios...
-    });
-
-    router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
-        // ...código sin cambios...
-    });
-
-    router.delete('/:saleId', authorizeRoles(['super_admin']), async (req, res) => {
-        // ...código sin cambios...
-    });
-    
     return router;
 };
 
