@@ -1,4 +1,4 @@
-// Archivo: routes/salePaymentRoutes.js
+// Archivo: routes/salePaymentRoutes.js (Versión Final con Exportación a Excel)
 
 const express = require('express');
 const router = express.Router();
@@ -6,6 +6,7 @@ const { Op } = require('sequelize');
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 const moment = require('moment-timezone');
+const ExcelJS = require('exceljs'); // <--- AÑADIDO: Requerido para generar el Excel
 
 let Sale, Client, Product, Payment, SaleItem, User, AuditLog;
 const TIMEZONE = "America/Mexico_City";
@@ -19,10 +20,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
     User = models.User;
     AuditLog = models.AuditLog;
     
-    // --- INICIO DE LA MODIFICACIÓN ---
     // Ruta POST / para crear una venta (lógica de crédito actualizada)
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-        // Se añaden 'paymentFrequency' y 'numberOfPayments' del cuerpo de la petición
+        // ... (Tu código de creación de venta permanece intacto)
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId, paymentFrequency, numberOfPayments } = req.body;
 
         if (!clientId || !saleItems || !saleItems.length) {
@@ -61,13 +61,12 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
                 const balance = totalAmount - downPaymentFloat;
                 
-                // Lógica de cálculo actualizada
                 Object.assign(saleData, { 
                     downPayment: downPaymentFloat, 
                     balanceDue: balance, 
-                    paymentFrequency: paymentFrequency || 'weekly', // Frecuencia recibida
-                    numberOfPayments: numPaymentsInt, // Número de pagos recibido
-                    weeklyPaymentAmount: parseFloat((balance / numPaymentsInt).toFixed(2)) // Se reutiliza la columna para el monto del pago
+                    paymentFrequency: paymentFrequency || 'weekly',
+                    numberOfPayments: numPaymentsInt,
+                    weeklyPaymentAmount: parseFloat((balance / numPaymentsInt).toFixed(2))
                 });
             } else {
                 Object.assign(saleData, { downPayment: totalAmount, balanceDue: 0 });
@@ -99,11 +98,10 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.status(400).json({ message: error.message || 'Error interno del servidor.' });
         }
     });
-    // --- FIN DE LA MODIFICACIÓN ---
 
-
-    // (El resto de las rutas GET, PUT, DELETE no necesitan cambios)
+    // Ruta GET / para listar ventas
     router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+        // ... (Tu código de listar ventas permanece intacto)
         try {
             const { search, page, limit } = req.query;
             const pageNum = parseInt(page, 10) || 1;
@@ -142,7 +140,86 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+
+    // --- INICIO DE LA MODIFICACIÓN ---
+    // Nueva ruta para exportar todas las ventas a un archivo Excel.
+    // Se coloca aquí para no interferir con las rutas que usan parámetros como /:saleId
+    router.get('/export-excel', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const sales = await Sale.findAll({
+                include: [
+                    { model: Client, as: 'client', attributes: ['name', 'lastName', 'phone'] },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', attributes: ['name'] }] },
+                    { model: Payment, as: 'payments' },
+                    { model: User, as: 'assignedCollector', attributes: ['username'] }
+                ],
+                order: [['saleDate', 'DESC']]
+            });
+
+            const workbook = new ExcelJS.Workbook();
+            const worksheet = workbook.addWorksheet('Reporte de Ventas');
+
+            worksheet.columns = [
+                { header: 'ID Venta', key: 'id', width: 10 },
+                { header: 'Fecha Venta', key: 'saleDate', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } },
+                { header: 'Cliente', key: 'clientName', width: 30 },
+                { header: 'Teléfono Cliente', key: 'clientPhone', width: 15 },
+                { header: 'Producto(s)', key: 'products', width: 50 },
+                { header: 'Monto Total', key: 'totalAmount', width: 15, style: { numFmt: '"$"#,##0.00' } },
+                { header: 'Tipo Venta', key: 'saleType', width: 15 },
+                { header: 'Enganche', key: 'downPayment', width: 15, style: { numFmt: '"$"#,##0.00' } },
+                { header: 'Saldo Pendiente', key: 'balanceDue', width: 15, style: { numFmt: '"$"#,##0.00' } },
+                { header: 'Estado', key: 'status', width: 15 },
+                { header: 'Plan de Pago', key: 'paymentPlan', width: 25 },
+                { header: 'Pagos Realizados', key: 'paymentsMade', width: 15, style: { numFmt: '0' } },
+                { header: 'Pagos Restantes', key: 'paymentsRemaining', width: 15, style: { numFmt: '0' } },
+                { header: 'Asignado A', key: 'collector', width: 20 },
+            ];
+
+            const formatFrequency = (freq) => {
+                const map = { daily: 'Diario', weekly: 'Semanal', fortnightly: 'Quincenal', monthly: 'Mensual' };
+                return map[freq] || freq;
+            };
+
+            sales.forEach(sale => {
+                const paymentsMade = sale.payments?.length || 0;
+                const paymentsRemaining = sale.isCredit && sale.numberOfPayments ? sale.numberOfPayments - paymentsMade : 0;
+                
+                worksheet.addRow({
+                    id: sale.id,
+                    saleDate: moment(sale.saleDate).toDate(), // Usamos moment para asegurar la fecha correcta
+                    clientName: sale.client ? `${sale.client.name} ${sale.client.lastName}` : 'N/A',
+                    clientPhone: sale.client?.phone || 'N/A',
+                    products: sale.saleItems.map(item => `${item.quantity}x ${item.product?.name || 'N/A'}`).join(', '),
+                    totalAmount: sale.totalAmount,
+                    saleType: sale.isCredit ? 'Crédito' : 'Contado',
+                    downPayment: sale.isCredit ? sale.downPayment : sale.totalAmount,
+                    balanceDue: sale.balanceDue,
+                    status: sale.status,
+                    paymentPlan: sale.isCredit ? `$${sale.weeklyPaymentAmount.toFixed(2)} (${formatFrequency(sale.paymentFrequency)})` : 'N/A',
+                    paymentsMade: paymentsMade,
+                    paymentsRemaining: paymentsRemaining > 0 ? paymentsRemaining : 0,
+                    collector: sale.assignedCollector?.username || 'Sin Asignar',
+                });
+            });
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', 'attachment; filename=Reporte_Ventas.xlsx');
+            
+            await workbook.xlsx.write(res);
+            res.end();
+
+        } catch (error) {
+            console.error("Error al exportar ventas a Excel:", error);
+            res.status(500).json({ message: 'Error interno del servidor al generar el reporte de Excel.' });
+        }
+    });
+    // --- FIN DE LA MODIFICACIÓN ---
+
+
+    // Ruta GET para cobranzas asignadas a un agente
     router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
+        // ... (Tu código de cobranzas asignadas permanece intacto)
         try {
             const collectorId = req.user.userId;
             const assignedSales = await Sale.findAll({
@@ -170,7 +247,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     };
                 }
                 
-                // Lógica de fecha de vencimiento dinámica (esto se corregirá en reportRoutes)
                 const lastPaymentDate = sale.payments.length > 0 ? moment(sale.payments[0].paymentDate) : moment(sale.saleDate);
                 const addUnit = sale.paymentFrequency === 'daily' ? 'days' : sale.paymentFrequency === 'weekly' ? 'weeks' : sale.paymentFrequency === 'fortnightly' ? 'weeks' : 'months';
                 const addAmount = sale.paymentFrequency === 'fortnightly' ? 2 : 1;
@@ -197,7 +273,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+    // Ruta GET para una venta específica
     router.get('/:saleId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
+        // ... (Tu código de obtener una venta permanece intacto)
         try {
             const { saleId } = req.params;
             if (isNaN(parseInt(saleId, 10))) {
@@ -224,7 +302,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+    // Ruta PUT para asignar un gestor a una venta
     router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
+        // ... (Tu código de asignar gestor permanece intacto)
         const { saleId } = req.params;
         const { collectorId } = req.body;
         if (collectorId === undefined) return res.status(400).json({ message: 'Se requiere el ID del gestor.' });
@@ -255,7 +335,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+    // Ruta POST para registrar un pago en una venta
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
+        // ... (Tu código de registrar pagos permanece intacto)
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
         try {
@@ -289,7 +371,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
+    // Ruta DELETE para eliminar una venta
     router.delete('/:saleId', authorizeRoles(['super_admin']), async (req, res) => {
+        // ... (Tu código de eliminar venta permanece intacto)
         const { saleId } = req.params;
         if (isNaN(parseInt(saleId, 10))) {
             return res.status(400).json({ message: 'El ID de la venta debe ser un número válido.' });
