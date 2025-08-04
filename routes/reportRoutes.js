@@ -342,8 +342,8 @@ const initReportRoutes = (models) => {
                     [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
                 };
             }
-
-            // CORRECCIÓN: Eliminado el ']' extra aquí
+            // NO DEBE HABER UN ']' EXTRA AQUÍ. Line 248 en tu error anterior.
+            // Asegúrate que no haya un caracter ']' entre el cierre del 'if' y la declaración de activeCreditSales.
             const activeCreditSales = await Sale.findAll({
                 where: salesWhereClause,
                 include: [{
@@ -353,7 +353,7 @@ const initReportRoutes = (models) => {
                     required: false // Mantener la venta aunque no tenga pagos en el rango
                 }],
                 order: [['saleDate', 'ASC']]
-            }); // Cierre correcto
+            });
 
             let totalProjectedIncome = 0;
             let totalRealIncome = 0;
@@ -379,15 +379,18 @@ const initReportRoutes = (models) => {
                 let iterationCount = 0;
                 const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
 
-                while (iterationCount < sale.numberOfPayments && currentPaymentProjectionDate.isBefore(relevantEndDate)) {
-                    currentPaymentProjectionDate.add(factor, unit); // Advance the projection date
+                while (iterationCount < sale.numberOfPayments && currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) { // Modified condition for safety
+                    // Advance the projection date before calculation for 'next payment due'
+                    if (iterationCount > 0 || !currentPaymentProjectionDate.isSame(sale.saleDate, 'day')) { // Don't advance on first iteration if already at saleDate
+                         currentPaymentProjectionDate.add(factor, unit);
+                    }
+
                     if (currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) { // Only count if projected date is within or before the end date
                         totalProjectedIncome += sale.weeklyPaymentAmount;
                         currentProjectedPayments += sale.weeklyPaymentAmount;
                     }
                     iterationCount++;
                 }
-
 
                 // Sumar ingresos reales para esta venta dentro del rango
                 const realIncomeForSale = sale.payments
