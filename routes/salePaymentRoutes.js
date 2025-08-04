@@ -1,4 +1,4 @@
-// Archivo: routes/salePaymentRoutes.js
+// Archivo: routes/salePaymentRoutes.js (Versión Final con Exportación a Excel y Enganche como Pago)
 
 const express = require('express');
 const router = express.Router();
@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
 const moment = require('moment-timezone');
-const ExcelJS = require('exceljs');
+const ExcelJS = require('exceljs'); // Requerido para generar el Excel
 
 let Sale, Client, Product, Payment, SaleItem, User, AuditLog;
 const TIMEZONE = "America/Mexico_City";
@@ -22,7 +22,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
     // Ruta POST / para crear una venta (lógica de crédito actualizada)
     router.post('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
-        // THIS IS THE CORRECT LOCATION FOR THIS DECLARATION
         const { clientId, saleItems, isCredit, downPayment, assignedCollectorId, paymentFrequency, numberOfPayments } = req.body;
 
         if (!clientId || !saleItems || !saleItems.length) {
@@ -68,7 +67,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     numberOfPayments: numPaymentsInt,
                     weeklyPaymentAmount: parseFloat((balance / numPaymentsInt).toFixed(2))
                 });
-            } else {
+            } else { // Si no es a crédito, el enganche es el totalAmount (venta de contado)
                 Object.assign(saleData, { downPayment: totalAmount, balanceDue: 0 });
             }
 
@@ -80,6 +79,18 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 await update.instance.save({ transaction: t });
             }
 
+            // --- LÓGICA AGREGADA: REGISTRAR EL ENGANCHE (O EL MONTO TOTAL EN VENTA DE CONTADO) COMO UN PAGO ---
+            if (newSale.downPayment > 0) { // Solo si hay un enganche positivo
+                const paymentNotes = newSale.isCredit ? 'Enganche inicial de venta a crédito' : 'Pago total de venta de contado';
+                await Payment.create({
+                    saleId: newSale.id,
+                    amount: newSale.downPayment, // Usar el downPayment (que es totalAmount para contado)
+                    paymentMethod: 'cash', // Puedes ajustar esto si la UI permite elegir método para el enganche
+                    notes: paymentNotes
+                }, { transaction: t });
+            }
+            // --- FIN LÓGICA AGREGADA ---
+
             await t.commit();
 
             try {
@@ -87,7 +98,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'CREÓ VENTA',
-                    details: `Venta ID: ${newSale.id} para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}`
+                    details: `Venta ID: ${newSale.id} para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}. ${newSale.isCredit ? `Enganche: $${newSale.downPayment.toFixed(2)}` : 'Contado'}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
@@ -135,7 +146,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
             res.json({ totalItems: count, totalPages: Math.ceil(count / limitNum), currentPage: pageNum, sales: rows });
         } catch (error) {
             console.error('Error al obtener ventas:', error);
-            res.status(500).json({ message: 'Error interno del servidor al obtener ventas.' });
+            res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
@@ -211,7 +222,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta GET para cobranzas asignadas a un agente
     router.get('/my-assigned', authorizeRoles(['collector_agent']), async (req, res) => {
         try {
             const collectorId = req.user.userId;
@@ -266,7 +276,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta GET para una venta específica
     router.get('/:saleId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         try {
             const { saleId } = req.params;
@@ -294,7 +303,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta PUT para asignar un gestor a una venta
     router.put('/:saleId/assign', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         const { saleId } = req.params;
         const { collectorId } = req.body;
@@ -326,7 +334,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta POST para registrar un pago en una venta
     router.post('/:saleId/payments', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), async (req, res) => {
         const { amount, paymentMethod, notes } = req.body;
         const { saleId } = req.params;
@@ -343,7 +350,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
             sale.balanceDue = parseFloat(newBalance.toFixed(2));
             if (sale.balanceDue <= 0) { sale.status = 'paid_off'; }
-
             await sale.save();
 
             try {
@@ -354,55 +360,41 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     details: `Monto: $${parseFloat(amount).toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-
             res.status(201).json(newPayment);
         } catch (error) {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
 
-    // RUTA PARA ELIMINAR/CANCELAR UN PAGO (PROTEGIDA - SOLO super_admin)
+    // --- NUEVA RUTA PARA ELIMINAR/CANCELAR UN PAGO (PROTEGIDA - SOLO super_admin) ---
+    // Esta ruta se agregó en las conversaciones anteriores.
     router.delete('/payments/:paymentId', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
         const { paymentId } = req.params;
         if (isNaN(parseInt(paymentId, 10))) {
             return res.status(400).json({ message: 'El ID del pago debe ser un número válido.' });
         }
-
-        const t = await sequelize.transaction(); // Iniciar transacción
+        const t = await sequelize.transaction();
         try {
             const paymentToDelete = await Payment.findByPk(paymentId, { transaction: t });
             if (!paymentToDelete) {
                 await t.rollback();
                 return res.status(404).json({ message: 'Pago no encontrado.' });
             }
-
             const sale = await Sale.findByPk(paymentToDelete.saleId, { transaction: t });
             if (!sale) {
                 await t.rollback();
                 return res.status(404).json({ message: 'Venta asociada al pago no encontrada.' });
             }
-
             const reversedAmount = paymentToDelete.amount;
             const oldBalanceDue = sale.balanceDue;
             const oldStatus = sale.status;
-
-            // Revertir el saldo de la venta
             sale.balanceDue = parseFloat((sale.balanceDue + reversedAmount).toFixed(2));
-
-            // Determinar el nuevo estado de la venta
-            // Si la venta estaba pagada y ahora tiene saldo, vuelve a 'pending_credit'
             if (oldStatus === 'paid_off' && sale.balanceDue > 0) {
                 sale.status = 'pending_credit';
             }
-
             await sale.save({ transaction: t });
-
-            // Eliminar el registro del pago
             await paymentToDelete.destroy({ transaction: t });
-
-            await t.commit(); // Confirmar la transacción
-
-            // Registrar en el log de auditoría
+            await t.commit();
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -413,9 +405,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
             } catch (auditError) {
                 console.error("Error al registrar la cancelación de pago en auditoría:", auditError);
             }
-
             res.status(200).json({ message: 'Pago cancelado y saldo de venta actualizado con éxito.', updatedSale: sale });
-
         } catch (error) {
             await t.rollback();
             console.error('Error al cancelar pago:', error);
@@ -423,7 +413,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     });
 
-    // Ruta DELETE para eliminar una venta
+    // --- RUTA PARA ELIMINAR UNA VENTA COMPLETA (Y RESTAURAR INVENTARIO) ---
+    // Esta ruta estaba en tu archivo original y es crucial. La estoy restaurando.
     router.delete('/:saleId', authorizeRoles(['super_admin']), async (req, res) => {
         const { saleId } = req.params;
         if (isNaN(parseInt(saleId, 10))) {
@@ -442,6 +433,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 return res.status(404).json({ message: 'Venta no encontrada.' });
             }
 
+            // Restaurar stock de productos
             for (const item of saleToDelete.saleItems) {
                 await Product.increment('stock', {
                     by: item.quantity,
@@ -464,13 +456,14 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
-            res.status(204).send();
+            res.status(204).send(); // No Content
         } catch (error) {
             await t.rollback();
             console.error('Error al eliminar venta:', error);
             res.status(500).json({ message: 'Error interno del servidor al eliminar la venta.' });
         }
     });
+    // --- FIN RUTA PARA ELIMINAR UNA VENTA COMPLETA ---
 
     return router;
 };
