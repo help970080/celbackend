@@ -9,7 +9,6 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 let Sale, Client, Product, Payment, SaleItem, User;
 const TIMEZONE = "America/Mexico_City";
 
-// --- INICIO DE LA MODIFICACIÓN ---
 // Función helper para calcular la próxima fecha de vencimiento dinámicamente
 const getNextDueDate = (lastPaymentDate, frequency) => {
     const baseDate = moment(lastPaymentDate).tz(TIMEZONE);
@@ -25,7 +24,6 @@ const getNextDueDate = (lastPaymentDate, frequency) => {
             return baseDate.add(7, 'days').endOf('day');
     }
 };
-// --- FIN DE LA MODIFICACIÓN ---
 
 const initReportRoutes = (models) => {
     Sale = models.Sale;
@@ -35,7 +33,6 @@ const initReportRoutes = (models) => {
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // --- INICIO DE LA MODIFICACIÓN ---
     // Ruta actualizada para el dashboard de estado de clientes
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
@@ -123,9 +120,7 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    // --- FIN DE LA MODIFICACIÓN ---
 
-    // (El resto de las rutas no necesitan cambios)
     router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const totalBalanceDue = await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
@@ -325,7 +320,7 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // --- NUEVA RUTA: Ingresos Proyectados vs. Reales ---
+    // NUEVA RUTA: Ingresos Proyectados vs. Reales
     router.get('/projected-vs-real-income', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { period = 'month', startDate, endDate } = req.query; // Default a mes, permite rango
@@ -348,6 +343,7 @@ const initReportRoutes = (models) => {
                 };
             }
 
+            // CORRECCIÓN: Eliminado el ']' extra aquí
             const activeCreditSales = await Sale.findAll({
                 where: salesWhereClause,
                 include: [{
@@ -357,7 +353,7 @@ const initReportRoutes = (models) => {
                     required: false // Mantener la venta aunque no tenga pagos en el rango
                 }],
                 order: [['saleDate', 'ASC']]
-            });
+            }); // Cierre correcto
 
             let totalProjectedIncome = 0;
             let totalRealIncome = 0;
@@ -373,25 +369,25 @@ const initReportRoutes = (models) => {
 
             for (const sale of activeCreditSales) {
                 const { unit, factor } = periodMapping[sale.paymentFrequency] || periodMapping.weekly; // Default a semanal si no se encuentra
-                const saleStartDate = moment(sale.saleDate).tz(TIMEZONE).startOf(unit);
-                const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
+                // const saleStartDate = moment(sale.saleDate).tz(TIMEZONE).startOf(unit); // No se usa directamente
 
                 // Calcular pagos proyectados hasta la fecha actual o hasta el final del rango
                 let currentProjectedPayments = 0;
-                let currentPaymentDate = moment(sale.saleDate).tz(TIMEZONE); // Start from sale date for projection
+                let currentPaymentProjectionDate = moment(sale.saleDate).tz(TIMEZONE); // Start from sale date for projection
 
                 // Loop through projected payment periods until relevantEndDate
                 let iterationCount = 0;
-                while (currentPaymentDate.isBefore(relevantEndDate) && iterationCount < sale.numberOfPayments) {
-                    currentPaymentDate.add(factor, unit);
-                    // Ensure the projected payment doesn't go beyond the original numberOfPayments
-                    // or beyond the total amount if weeklyPaymentAmount * numberOfPayments > totalAmount
-                    if (iterationCount < sale.numberOfPayments) {
+                const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
+
+                while (iterationCount < sale.numberOfPayments && currentPaymentProjectionDate.isBefore(relevantEndDate)) {
+                    currentPaymentProjectionDate.add(factor, unit); // Advance the projection date
+                    if (currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) { // Only count if projected date is within or before the end date
                         totalProjectedIncome += sale.weeklyPaymentAmount;
                         currentProjectedPayments += sale.weeklyPaymentAmount;
                     }
                     iterationCount++;
                 }
+
 
                 // Sumar ingresos reales para esta venta dentro del rango
                 const realIncomeForSale = sale.payments
@@ -406,18 +402,14 @@ const initReportRoutes = (models) => {
                 totalRealIncome += realIncomeForSale;
 
                 // Calcular desviaciones por venta activa (solo si tiene saldo pendiente)
-                if (sale.balanceDue > 0) {
-                    const paymentsTillNow = sale.payments.reduce((sum, p) => sum + p.amount, 0);
-                    const totalPaidOnCredit = sale.downPayment + paymentsTillNow;
-                    const expectedPaid = sale.totalAmount - sale.balanceDue; // Amount that should have been paid considering current balance
+                // Esto es una simplificación; la desviación exacta requeriría un cálculo de pagos esperados *hasta hoy*
+                // y comparar con pagos *reales hasta hoy*. Aquí se compara proyección en el rango vs real en el rango.
+                const deviationForThisSale = realIncomeForSale - currentProjectedPayments;
 
-                    const deviation = realIncomeForSale - currentProjectedPayments;
-
-                    if (deviation < 0) {
-                        totalOverdueAmount += Math.abs(deviation); // Customer owes more than projected
-                    } else if (deviation > 0) {
-                        totalAdvanceAmount += deviation; // Customer paid more than projected
-                    }
+                if (deviationForThisSale < 0) {
+                    totalOverdueAmount += Math.abs(deviationForThisSale); // La venta está atrasada respecto a su proyección en el rango
+                } else if (deviationForThisSale > 0) {
+                    totalAdvanceAmount += deviationForThisSale; // La venta tiene pagos adelantados respecto a su proyección en el rango
                 }
             }
 
