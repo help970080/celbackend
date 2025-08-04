@@ -1,3 +1,5 @@
+// Archivo: routes/reportRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
@@ -7,6 +9,7 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 let Sale, Client, Product, Payment, SaleItem, User;
 const TIMEZONE = "America/Mexico_City";
 
+// --- Función helper para calcular la próxima fecha de vencimiento dinámicamente (YA EXISTE EN TU ARCHIVO ORIGINAL) ---
 const getNextDueDate = (lastPaymentDate, frequency) => {
     const baseDate = moment(lastPaymentDate).tz(TIMEZONE);
     switch (frequency) {
@@ -261,13 +264,13 @@ const initReportRoutes = (models) => {
                 group: [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate'))],
                 order: [[Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), 'DESC']],
                 raw: true
-            ]);
+            });
             res.json(results);
         } catch (error) {
             res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
         }
     });
-
+    
     router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
@@ -304,7 +307,7 @@ const initReportRoutes = (models) => {
                     [Sequelize.col('sale.assignedCollector.username'), 'ASC']
                 ],
                 raw: true
-            ]);
+            });
             res.json(results);
         } catch (error) {
             console.error('Error en /collections-by-agent:', error);
@@ -313,7 +316,7 @@ const initReportRoutes = (models) => {
     });
 
     router.get('/projected-vs-real-income', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        try { // This 'try' block corresponds to the 'catch' block at the end of this route.
+        try {
             const { period = 'month', startDate, endDate } = req.query;
             const now = moment().tz(TIMEZONE);
 
@@ -402,7 +405,7 @@ const initReportRoutes = (models) => {
                 details: []
             });
 
-        } catch (error) { // THIS IS THE CATCH BLOCK
+        } catch (error) {
             console.error('Error en /projected-vs-real-income:', error);
             res.status(500).json({ message: 'Error interno del servidor al obtener el reporte de ingresos proyectados.' });
         }
