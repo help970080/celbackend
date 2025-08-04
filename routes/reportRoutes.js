@@ -39,9 +39,9 @@ const initReportRoutes = (models) => {
     // Ruta actualizada para el dashboard de estado de clientes
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
-            const allCreditSales = await Sale.findAll({ 
-                where: { isCredit: true }, 
-                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }] 
+            const allCreditSales = await Sale.findAll({
+                where: { isCredit: true },
+                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }]
             });
 
             let clientsStatus = { alCorriente: new Set(), porVencer: new Set(), vencidos: new Set(), pagados: new Set() };
@@ -53,7 +53,7 @@ const initReportRoutes = (models) => {
                     continue;
                 }
                 const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
-                
+
                 // Usamos la nueva función helper
                 const nextPaymentDueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
 
@@ -89,9 +89,9 @@ const initReportRoutes = (models) => {
             return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
         }
         try {
-            const allCreditSales = await Sale.findAll({ 
-                where: { clientId, isCredit: true }, 
-                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }] 
+            const allCreditSales = await Sale.findAll({
+                where: { clientId, isCredit: true },
+                include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }]
             });
 
             let riskCategory = 'BAJO';
@@ -125,7 +125,6 @@ const initReportRoutes = (models) => {
     });
     // --- FIN DE LA MODIFICACIÓN ---
 
-
     // (El resto de las rutas no necesitan cambios)
     router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
@@ -146,7 +145,7 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    
+
     router.get('/client-statement/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         if (isNaN(parseInt(clientId, 10))) {
@@ -170,7 +169,7 @@ const initReportRoutes = (models) => {
             res.status(500).json({ message: 'Error interno del servidor.' });
         }
     });
-    
+
     router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const pendingCredits = await Sale.findAll({
@@ -251,7 +250,7 @@ const initReportRoutes = (models) => {
                 group: [Sequelize.fn('date_trunc', period, Sequelize.col('saleDate'))],
                 order: [[Sequelize.fn('date_trunc', period, Sequelize.col('saleDate')), 'DESC']],
                 raw: true
-            });
+            ]);
             res.json(results);
         } catch (error) {
             res.status(500).json({ message: 'Error al obtener ventas acumuladas.' });
@@ -275,13 +274,13 @@ const initReportRoutes = (models) => {
                 group: [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate'))],
                 order: [[Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), 'DESC']],
                 raw: true
-            });
+            ]);
             res.json(results);
         } catch (error) {
             res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
         }
     });
-    
+
     router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
@@ -318,11 +317,121 @@ const initReportRoutes = (models) => {
                     [Sequelize.col('sale.assignedCollector.username'), 'ASC']
                 ],
                 raw: true
-            });
+            ]);
             res.json(results);
         } catch (error) {
             console.error('Error en /collections-by-agent:', error);
             res.status(500).json({ message: 'Error al obtener cobranza por gestor.' });
+        }
+    });
+
+    // --- NUEVA RUTA: Ingresos Proyectados vs. Reales ---
+    router.get('/projected-vs-real-income', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
+        try {
+            const { period = 'month', startDate, endDate } = req.query; // Default a mes, permite rango
+            const now = moment().tz(TIMEZONE);
+
+            let salesWhereClause = {
+                isCredit: true,
+                status: { [Op.ne]: 'paid_off' } // Considerar solo ventas a crédito activas
+            };
+            let paymentsWhereClause = {};
+
+            if (startDate && endDate) {
+                // Para ventas, consideramos las creadas hasta la fecha de fin del rango
+                salesWhereClause.saleDate = {
+                    [Op.lte]: moment(endDate).endOf('day').toDate()
+                };
+                // Para pagos, consideramos los realizados dentro del rango
+                paymentsWhereClause.paymentDate = {
+                    [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
+                };
+            }
+
+            const activeCreditSales = await Sale.findAll({
+                where: salesWhereClause,
+                include: [{
+                    model: Payment,
+                    as: 'payments',
+                    where: paymentsWhereClause, // Aplicar filtro de fecha a pagos si existe
+                    required: false // Mantener la venta aunque no tenga pagos en el rango
+                }],
+                order: [['saleDate', 'ASC']]
+            });
+
+            let totalProjectedIncome = 0;
+            let totalRealIncome = 0;
+            let totalOverdueAmount = 0;
+            let totalAdvanceAmount = 0;
+
+            const periodMapping = {
+                'daily': { unit: 'days', factor: 1 },
+                'weekly': { unit: 'weeks', factor: 1 },
+                'fortnightly': { unit: 'weeks', factor: 2 },
+                'monthly': { unit: 'months', factor: 1 }
+            };
+
+            for (const sale of activeCreditSales) {
+                const { unit, factor } = periodMapping[sale.paymentFrequency] || periodMapping.weekly; // Default a semanal si no se encuentra
+                const saleStartDate = moment(sale.saleDate).tz(TIMEZONE).startOf(unit);
+                const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
+
+                // Calcular pagos proyectados hasta la fecha actual o hasta el final del rango
+                let currentProjectedPayments = 0;
+                let currentPaymentDate = moment(sale.saleDate).tz(TIMEZONE); // Start from sale date for projection
+
+                // Loop through projected payment periods until relevantEndDate
+                let iterationCount = 0;
+                while (currentPaymentDate.isBefore(relevantEndDate) && iterationCount < sale.numberOfPayments) {
+                    currentPaymentDate.add(factor, unit);
+                    // Ensure the projected payment doesn't go beyond the original numberOfPayments
+                    // or beyond the total amount if weeklyPaymentAmount * numberOfPayments > totalAmount
+                    if (iterationCount < sale.numberOfPayments) {
+                        totalProjectedIncome += sale.weeklyPaymentAmount;
+                        currentProjectedPayments += sale.weeklyPaymentAmount;
+                    }
+                    iterationCount++;
+                }
+
+                // Sumar ingresos reales para esta venta dentro del rango
+                const realIncomeForSale = sale.payments
+                    .filter(p => {
+                        const paymentMoment = moment(p.paymentDate).tz(TIMEZONE);
+                        const start = startDate ? moment(startDate).startOf('day').tz(TIMEZONE) : moment.tz('1900-01-01', TIMEZONE); // Very old start
+                        const end = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : moment.tz('2100-01-01', TIMEZONE); // Very future end
+                        return paymentMoment.isBetween(start, end, null, '[]'); // Inclusive range
+                    })
+                    .reduce((sum, p) => sum + p.amount, 0);
+
+                totalRealIncome += realIncomeForSale;
+
+                // Calcular desviaciones por venta activa (solo si tiene saldo pendiente)
+                if (sale.balanceDue > 0) {
+                    const paymentsTillNow = sale.payments.reduce((sum, p) => sum + p.amount, 0);
+                    const totalPaidOnCredit = sale.downPayment + paymentsTillNow;
+                    const expectedPaid = sale.totalAmount - sale.balanceDue; // Amount that should have been paid considering current balance
+
+                    const deviation = realIncomeForSale - currentProjectedPayments;
+
+                    if (deviation < 0) {
+                        totalOverdueAmount += Math.abs(deviation); // Customer owes more than projected
+                    } else if (deviation > 0) {
+                        totalAdvanceAmount += deviation; // Customer paid more than projected
+                    }
+                }
+            }
+
+            res.json({
+                totalProjectedIncome: parseFloat(totalProjectedIncome.toFixed(2)),
+                totalRealIncome: parseFloat(totalRealIncome.toFixed(2)),
+                totalOverdueAmount: parseFloat(totalOverdueAmount.toFixed(2)),
+                totalAdvanceAmount: parseFloat(totalAdvanceAmount.toFixed(2)),
+                details: [] // Puedes añadir detalles por venta si es necesario para el frontend
+            });
+
+        } catch (error) {
+            console.error('Error en /projected-vs-real-income:', error);
+            res.status(500).json({ message: 'Error interno del servidor al obtener el reporte de ingresos proyectados.' });
         }
     });
 
