@@ -342,8 +342,8 @@ const initReportRoutes = (models) => {
                     [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
                 };
             }
-            // NO DEBE HABER UN ']' EXTRA AQUÍ. Line 248 en tu error anterior.
-            // Asegúrate que no haya un caracter ']' entre el cierre del 'if' y la declaración de activeCreditSales.
+            // NO DEBE HABER UN ']' EXTRA AQUÍ (EN LA LÍNEA DEL ERROR 248).
+            // Esta línea debería ser la que continúa sin cierres inesperados.
             const activeCreditSales = await Sale.findAll({
                 where: salesWhereClause,
                 include: [{
@@ -353,7 +353,7 @@ const initReportRoutes = (models) => {
                     required: false // Mantener la venta aunque no tenga pagos en el rango
                 }],
                 order: [['saleDate', 'ASC']]
-            });
+            }); // Cierre correcto de findAll
 
             let totalProjectedIncome = 0;
             let totalRealIncome = 0;
@@ -379,18 +379,26 @@ const initReportRoutes = (models) => {
                 let iterationCount = 0;
                 const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
 
-                while (iterationCount < sale.numberOfPayments && currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) { // Modified condition for safety
-                    // Advance the projection date before calculation for 'next payment due'
-                    if (iterationCount > 0 || !currentPaymentProjectionDate.isSame(sale.saleDate, 'day')) { // Don't advance on first iteration if already at saleDate
-                         currentPaymentProjectionDate.add(factor, unit);
+                // Ajuste para la proyección inicial y bucle para evitar infinitos o errores lógicos
+                while (iterationCount < sale.numberOfPayments) { // Limitar por número total de pagos
+                    // Calcular la próxima fecha de vencimiento proyectada desde el inicio de la venta
+                    // O desde el último pago (si hay un historial para esa venta)
+                    let projectedDueDate = moment(sale.saleDate).tz(TIMEZONE);
+                    if (iterationCount > 0) { // Si no es el primer pago, avanza la fecha
+                        projectedDueDate = projectedDueDate.add(iterationCount * factor, unit);
                     }
 
-                    if (currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) { // Only count if projected date is within or before the end date
+                    // Si la fecha proyectada está dentro o antes del final del rango
+                    if (projectedDueDate.isSameOrBefore(relevantEndDate)) {
                         totalProjectedIncome += sale.weeklyPaymentAmount;
                         currentProjectedPayments += sale.weeklyPaymentAmount;
+                    } else {
+                        // Si la fecha proyectada ya se pasó del rango, no sumamos más y salimos del bucle
+                        break;
                     }
                     iterationCount++;
                 }
+
 
                 // Sumar ingresos reales para esta venta dentro del rango
                 const realIncomeForSale = sale.payments
@@ -405,8 +413,7 @@ const initReportRoutes = (models) => {
                 totalRealIncome += realIncomeForSale;
 
                 // Calcular desviaciones por venta activa (solo si tiene saldo pendiente)
-                // Esto es una simplificación; la desviación exacta requeriría un cálculo de pagos esperados *hasta hoy*
-                // y comparar con pagos *reales hasta hoy*. Aquí se compara proyección en el rango vs real en el rango.
+                // Esta es una aproximación: compara lo proyectado en el rango vs lo real en el rango
                 const deviationForThisSale = realIncomeForSale - currentProjectedPayments;
 
                 if (deviationForThisSale < 0) {
