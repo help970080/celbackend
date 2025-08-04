@@ -1,5 +1,3 @@
-// Archivo: routes/reportRoutes.js
-
 const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
@@ -9,7 +7,6 @@ const authorizeRoles = require('../middleware/roleMiddleware');
 let Sale, Client, Product, Payment, SaleItem, User;
 const TIMEZONE = "America/Mexico_City";
 
-// Función helper para calcular la próxima fecha de vencimiento dinámicamente
 const getNextDueDate = (lastPaymentDate, frequency) => {
     const baseDate = moment(lastPaymentDate).tz(TIMEZONE);
     switch (frequency) {
@@ -33,7 +30,6 @@ const initReportRoutes = (models) => {
     SaleItem = models.SaleItem;
     User = models.User;
 
-    // Ruta actualizada para el dashboard de estado de clientes
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
         try {
             const allCreditSales = await Sale.findAll({
@@ -51,18 +47,16 @@ const initReportRoutes = (models) => {
                 }
                 const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
 
-                // Usamos la nueva función helper
                 const nextPaymentDueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
 
                 if (nextPaymentDueDate.isBefore(today)) {
                     clientsStatus.vencidos.add(sale.clientId);
-                } else if (nextPaymentDueDate.diff(today, 'days') < 7) { // "Por vencer" sigue siendo un buen indicador a 7 días
+                } else if (nextPaymentDueDate.diff(today, 'days') < 7) {
                     clientsStatus.porVencer.add(sale.clientId);
                 } else {
                     clientsStatus.alCorriente.add(sale.clientId);
                 }
             }
-            // Lógica para evitar duplicados en los status
             clientsStatus.vencidos.forEach(id => { clientsStatus.porVencer.delete(id); clientsStatus.alCorriente.delete(id); });
             clientsStatus.porVencer.forEach(id => clientsStatus.alCorriente.delete(id));
 
@@ -79,7 +73,6 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // La ruta de riesgo también se actualiza
     router.get('/client-risk/:clientId', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']), async (req, res) => {
         const { clientId } = req.params;
         if (isNaN(parseInt(clientId, 10))) {
@@ -99,7 +92,6 @@ const initReportRoutes = (models) => {
                 const hasOverdueSale = allCreditSales.some(sale => {
                     if (sale.balanceDue > 0) {
                         const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
-                        // Usamos la nueva función helper
                         const dueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
                         return dueDate.isBefore(today);
                     }
@@ -245,7 +237,7 @@ const initReportRoutes = (models) => {
                 group: [Sequelize.fn('date_trunc', period, Sequelize.col('saleDate'))],
                 order: [[Sequelize.fn('date_trunc', period, Sequelize.col('saleDate')), 'DESC']],
                 raw: true
-            ]);
+            });
             res.json(results);
         } catch (error) {
             res.status(500).json({ message: 'Error al obtener ventas acumuladas.' });
@@ -320,40 +312,35 @@ const initReportRoutes = (models) => {
         }
     });
 
-    // NUEVA RUTA: Ingresos Proyectados vs. Reales
     router.get('/projected-vs-real-income', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), async (req, res) => {
-        try {
-            const { period = 'month', startDate, endDate } = req.query; // Default a mes, permite rango
+        try { // This 'try' block corresponds to the 'catch' block at the end of this route.
+            const { period = 'month', startDate, endDate } = req.query;
             const now = moment().tz(TIMEZONE);
 
             let salesWhereClause = {
                 isCredit: true,
-                status: { [Op.ne]: 'paid_off' } // Considerar solo ventas a crédito activas
+                status: { [Op.ne]: 'paid_off' }
             };
             let paymentsWhereClause = {};
 
             if (startDate && endDate) {
-                // Para ventas, consideramos las creadas hasta la fecha de fin del rango
                 salesWhereClause.saleDate = {
                     [Op.lte]: moment(endDate).endOf('day').toDate()
                 };
-                // Para pagos, consideramos los realizados dentro del rango
                 paymentsWhereClause.paymentDate = {
                     [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
                 };
             }
-            // ESTA ES LA LÍNEA 248. NO DEBE HABER UN ']' EXTRA AQUÍ.
-            // Asegúrate que no haya un caracter ']' entre el cierre del 'if' y la declaración de activeCreditSales.
             const activeCreditSales = await Sale.findAll({
                 where: salesWhereClause,
                 include: [{
                     model: Payment,
                     as: 'payments',
-                    where: paymentsWhereClause, // Aplicar filtro de fecha a pagos si existe
-                    required: false // Mantener la venta aunque no tenga pagos en el rango
+                    where: paymentsWhereClause,
+                    required: false
                 }],
                 order: [['saleDate', 'ASC']]
-            }); // Cierre correcto del método findAll
+            });
 
             let totalProjectedIncome = 0;
             let totalRealIncome = 0;
@@ -368,56 +355,42 @@ const initReportRoutes = (models) => {
             };
 
             for (const sale of activeCreditSales) {
-                const { unit, factor } = periodMapping[sale.paymentFrequency] || periodMapping.weekly; // Default a semanal si no se encuentra
-                // const saleStartDate = moment(sale.saleDate).tz(TIMEZONE).startOf(unit); // No se usa directamente
-
-                // Calcular pagos proyectados hasta la fecha actual o hasta el final del rango
+                const { unit, factor } = periodMapping[sale.paymentFrequency] || periodMapping.weekly;
                 let currentProjectedPayments = 0;
-                // La proyección siempre inicia desde la fecha de venta, no desde el último pago, para calcular "lo que se debió proyectar"
                 let currentPaymentProjectionDate = moment(sale.saleDate).tz(TIMEZONE);
 
                 let iterationCount = 0;
                 const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
 
-                // Bucle de proyección: Suma los pagos proyectados que DEBIERON haberse cobrado hasta el fin del rango.
-                while (iterationCount < sale.numberOfPayments) { // Limitar por el número total de pagos de la venta
-                    // Avanzar la fecha proyectada si no es la primera iteración o si no está alineada con el inicio de la venta
-                    if (iterationCount > 0) {
-                         currentPaymentProjectionDate = moment(sale.saleDate).add(iterationCount * factor, unit).tz(TIMEZONE);
-                    }
-
-                    // Si la fecha proyectada está dentro o antes del final del rango
-                    if (currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) {
+                while (iterationCount < sale.numberOfPayments) {
+                    let projectedDueDate = moment(sale.saleDate).add(iterationCount * factor, unit).tz(TIMEZONE);
+                    
+                    if (projectedDueDate.isSameOrBefore(relevantEndDate)) {
                         totalProjectedIncome += sale.weeklyPaymentAmount;
                         currentProjectedPayments += sale.weeklyPaymentAmount;
                     } else {
-                        // Si la fecha proyectada ya se pasó del rango, no sumamos más y salimos del bucle
                         break;
                     }
                     iterationCount++;
                 }
 
-
-                // Sumar ingresos reales para esta venta dentro del rango de reporte (startDate a endDate)
                 const realIncomeForSale = sale.payments
                     .filter(p => {
                         const paymentMoment = moment(p.paymentDate).tz(TIMEZONE);
                         const start = startDate ? moment(startDate).startOf('day').tz(TIMEZONE) : moment.tz('1900-01-01', TIMEZONE);
                         const end = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : moment.tz('2100-01-01', TIMEZONE);
-                        return paymentMoment.isBetween(start, end, null, '[]'); // Rango inclusivo
+                        return paymentMoment.isBetween(start, end, null, '[]');
                     })
                     .reduce((sum, p) => sum + p.amount, 0);
 
                 totalRealIncome += realIncomeForSale;
 
-                // Calcular desviaciones por venta activa
-                // La desviación es la diferencia entre lo que realmente se cobró en el rango y lo que se debió proyectar en el rango
                 const deviationForThisSale = realIncomeForSale - currentProjectedPayments;
 
                 if (deviationForThisSale < 0) {
-                    totalOverdueAmount += Math.abs(deviationForThisSale); // La venta está atrasada (se cobró menos de lo proyectado)
+                    totalOverdueAmount += Math.abs(deviationForThisSale);
                 } else if (deviationForThisSale > 0) {
-                    totalAdvanceAmount += deviationForThisSale; // La venta tiene pagos adelantados (se cobró más de lo proyectado)
+                    totalAdvanceAmount += deviationForThisSale;
                 }
             }
 
@@ -426,10 +399,10 @@ const initReportRoutes = (models) => {
                 totalRealIncome: parseFloat(totalRealIncome.toFixed(2)),
                 totalOverdueAmount: parseFloat(totalOverdueAmount.toFixed(2)),
                 totalAdvanceAmount: parseFloat(totalAdvanceAmount.toFixed(2)),
-                details: [] // Puedes añadir detalles por venta si es necesario para el frontend
+                details: []
             });
 
-        } catch (error) {
+        } catch (error) { // THIS IS THE CATCH BLOCK
             console.error('Error en /projected-vs-real-income:', error);
             res.status(500).json({ message: 'Error interno del servidor al obtener el reporte de ingresos proyectados.' });
         }
