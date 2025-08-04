@@ -342,8 +342,8 @@ const initReportRoutes = (models) => {
                     [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
                 };
             }
-            // NO DEBE HABER UN ']' EXTRA AQUÍ (EN LA LÍNEA DEL ERROR 248).
-            // Esta línea debería ser la que continúa sin cierres inesperados.
+            // ESTA ES LA LÍNEA 248. NO DEBE HABER UN ']' EXTRA AQUÍ.
+            // Asegúrate que no haya un caracter ']' entre el cierre del 'if' y la declaración de activeCreditSales.
             const activeCreditSales = await Sale.findAll({
                 where: salesWhereClause,
                 include: [{
@@ -353,7 +353,7 @@ const initReportRoutes = (models) => {
                     required: false // Mantener la venta aunque no tenga pagos en el rango
                 }],
                 order: [['saleDate', 'ASC']]
-            }); // Cierre correcto de findAll
+            }); // Cierre correcto del método findAll
 
             let totalProjectedIncome = 0;
             let totalRealIncome = 0;
@@ -373,23 +373,21 @@ const initReportRoutes = (models) => {
 
                 // Calcular pagos proyectados hasta la fecha actual o hasta el final del rango
                 let currentProjectedPayments = 0;
-                let currentPaymentProjectionDate = moment(sale.saleDate).tz(TIMEZONE); // Start from sale date for projection
+                // La proyección siempre inicia desde la fecha de venta, no desde el último pago, para calcular "lo que se debió proyectar"
+                let currentPaymentProjectionDate = moment(sale.saleDate).tz(TIMEZONE);
 
-                // Loop through projected payment periods until relevantEndDate
                 let iterationCount = 0;
                 const relevantEndDate = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : now.endOf('day');
 
-                // Ajuste para la proyección inicial y bucle para evitar infinitos o errores lógicos
-                while (iterationCount < sale.numberOfPayments) { // Limitar por número total de pagos
-                    // Calcular la próxima fecha de vencimiento proyectada desde el inicio de la venta
-                    // O desde el último pago (si hay un historial para esa venta)
-                    let projectedDueDate = moment(sale.saleDate).tz(TIMEZONE);
-                    if (iterationCount > 0) { // Si no es el primer pago, avanza la fecha
-                        projectedDueDate = projectedDueDate.add(iterationCount * factor, unit);
+                // Bucle de proyección: Suma los pagos proyectados que DEBIERON haberse cobrado hasta el fin del rango.
+                while (iterationCount < sale.numberOfPayments) { // Limitar por el número total de pagos de la venta
+                    // Avanzar la fecha proyectada si no es la primera iteración o si no está alineada con el inicio de la venta
+                    if (iterationCount > 0) {
+                         currentPaymentProjectionDate = moment(sale.saleDate).add(iterationCount * factor, unit).tz(TIMEZONE);
                     }
 
                     // Si la fecha proyectada está dentro o antes del final del rango
-                    if (projectedDueDate.isSameOrBefore(relevantEndDate)) {
+                    if (currentPaymentProjectionDate.isSameOrBefore(relevantEndDate)) {
                         totalProjectedIncome += sale.weeklyPaymentAmount;
                         currentProjectedPayments += sale.weeklyPaymentAmount;
                     } else {
@@ -400,26 +398,26 @@ const initReportRoutes = (models) => {
                 }
 
 
-                // Sumar ingresos reales para esta venta dentro del rango
+                // Sumar ingresos reales para esta venta dentro del rango de reporte (startDate a endDate)
                 const realIncomeForSale = sale.payments
                     .filter(p => {
                         const paymentMoment = moment(p.paymentDate).tz(TIMEZONE);
-                        const start = startDate ? moment(startDate).startOf('day').tz(TIMEZONE) : moment.tz('1900-01-01', TIMEZONE); // Very old start
-                        const end = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : moment.tz('2100-01-01', TIMEZONE); // Very future end
-                        return paymentMoment.isBetween(start, end, null, '[]'); // Inclusive range
+                        const start = startDate ? moment(startDate).startOf('day').tz(TIMEZONE) : moment.tz('1900-01-01', TIMEZONE);
+                        const end = endDate ? moment(endDate).endOf('day').tz(TIMEZONE) : moment.tz('2100-01-01', TIMEZONE);
+                        return paymentMoment.isBetween(start, end, null, '[]'); // Rango inclusivo
                     })
                     .reduce((sum, p) => sum + p.amount, 0);
 
                 totalRealIncome += realIncomeForSale;
 
-                // Calcular desviaciones por venta activa (solo si tiene saldo pendiente)
-                // Esta es una aproximación: compara lo proyectado en el rango vs lo real en el rango
+                // Calcular desviaciones por venta activa
+                // La desviación es la diferencia entre lo que realmente se cobró en el rango y lo que se debió proyectar en el rango
                 const deviationForThisSale = realIncomeForSale - currentProjectedPayments;
 
                 if (deviationForThisSale < 0) {
-                    totalOverdueAmount += Math.abs(deviationForThisSale); // La venta está atrasada respecto a su proyección en el rango
+                    totalOverdueAmount += Math.abs(deviationForThisSale); // La venta está atrasada (se cobró menos de lo proyectado)
                 } else if (deviationForThisSale > 0) {
-                    totalAdvanceAmount += deviationForThisSale; // La venta tiene pagos adelantados respecto a su proyección en el rango
+                    totalAdvanceAmount += deviationForThisSale; // La venta tiene pagos adelantados (se cobró más de lo proyectado)
                 }
             }
 
