@@ -17,12 +17,16 @@ function startOfDay(d) {
   return x;
 }
 
+// Pequeña tolerancia para evitar contar residuos por redondeo (centavos)
+const EPS = 0.009;
+
 // saldo real por venta = total - suma(pagos)
 function calcSaleBalance(sale) {
   const total = Number(sale.totalAmount || 0);
   const paid = (sale.payments || []).reduce((acc, p) => acc + Number(p.amount || 0), 0);
   const bal = total - paid;
-  return bal > 0 ? bal : 0;
+  // si el saldo es muy pequeño (<= EPS), tratar como 0
+  return bal > EPS ? bal : 0;
 }
 
 // nextDueDate robusto: respeta BD; si no hay, usa último pago o fecha de venta + 7 días
@@ -45,22 +49,21 @@ module.exports = (models) => {
    * Devuelve **un registro por cliente** con saldo > 0 (sumando todas sus ventas),
    * severidad por el peor atraso entre sus ventas.
    *
-   * Nota: partimos de Sale.findAll (NO de Client) para no depender del alias hasMany('sales').
+   * Partimos de Sale.findAll para usar alias existentes: 'client' y 'payments'.
    */
   router.get('/overdue', async (req, res) => {
     try {
       const sales = await Sale.findAll({
-        // No filtramos por isCredit para que cuadre con tu Excel.
         include: [
           {
             model: Client,
-            as: 'client',            // <— este alias sí existe en tu app
+            as: 'client',
             required: true,
             attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
           },
           {
             model: Payment,
-            as: 'payments',          // <— este alias también existe
+            as: 'payments',
             required: false,
             attributes: ['id', 'amount', 'paymentDate', 'paymentMethod'],
           },
@@ -77,9 +80,9 @@ module.exports = (models) => {
         const c = s.client;
         if (!c) continue;
 
-        // saldo real por venta
+        // saldo real por venta con tolerancia EPS
         const saleBalance = calcSaleBalance(s);
-        if (saleBalance <= 0) continue; // sólo ventas con saldo positivo
+        if (saleBalance <= EPS) continue; // descartar ventas con saldo 0
 
         // cálculo de fechas y atraso
         const nextDue = calcNextDueDate(s);
@@ -111,7 +114,7 @@ module.exports = (models) => {
         agg.balanceDue += saleBalance;
         agg.totalAmount += Number(s.totalAmount || 0);
 
-        // semanal: tomamos el mayor para referencia de cobro
+        // semanal: mayor como referencia de cobro
         const weekly = Number(s.weeklyPaymentAmount || 0);
         if (weekly > agg.weeklyPaymentAmount) agg.weeklyPaymentAmount = weekly;
 
@@ -128,7 +131,7 @@ module.exports = (models) => {
 
         agg.sales.push({
           id: s.id,
-          saleBalance,
+          saleBalance: Number(saleBalance.toFixed(2)),
           totalAmount: Number(s.totalAmount || 0),
           weeklyPaymentAmount: weekly,
           nextDueDate: nextDue.toISOString(),
@@ -138,10 +141,10 @@ module.exports = (models) => {
         });
       }
 
-      // Construimos salida: un registro por cliente con saldo > 0
+      // Construimos salida: un registro por cliente con saldo > 0 (considerando EPS)
       const out = [];
       for (const [, v] of byClient) {
-        if (v.balanceDue <= 0) continue;
+        if (v.balanceDue <= EPS) continue; // excluir clientes con saldo 0
         out.push({
           client: v.client,
           sale: {
