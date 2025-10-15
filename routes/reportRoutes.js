@@ -353,6 +353,84 @@ const initReportRoutes = (models) => {
     }
   );
 
+  // ===== NUEVO: Ingresos proyectados vs reales =====
+  // GET /api/reports/projected-vs-real-income?period=day|week|month&start=YYYY-MM-DD&end=YYYY-MM-DD
+  router.get(
+    '/projected-vs-real-income',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const { period = 'month', start, end } = req.query;
+
+        const startOfDay = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+        const endOfDay   = (d) => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
+
+        // Rango por defecto según period
+        const today = startOfDay(new Date());
+        let rangeStart, rangeEnd;
+        if (start && end) {
+          rangeStart = startOfDay(new Date(start));
+          rangeEnd   = endOfDay(new Date(end));
+        } else {
+          const s = new Date(today);
+          const e = new Date(today);
+          if (period === 'day') {
+            // hoy
+          } else if (period === 'week') {
+            const day = today.getDay(); // 0=dom
+            const diffToMon = (day + 6) % 7;
+            s.setDate(today.getDate() - diffToMon);
+            e.setDate(s.getDate() + 6);
+          } else { // month
+            s.setDate(1);
+            e.setMonth(s.getMonth() + 1); e.setDate(0);
+          }
+          rangeStart = startOfDay(s);
+          rangeEnd   = endOfDay(e);
+        }
+
+        // Real: suma de pagos en el rango
+        const payments = await Payment.findAll({
+          where: { paymentDate: { [Op.between]: [rangeStart, rangeEnd] } },
+          attributes: ['amount'],
+          raw: true
+        });
+        const real = payments.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+
+        // Proyectado: semanal * factor, cap por saldo
+        // factor: day=1/7, week=1, month=4 (aprox 4 semanas)
+        let factor = 4;
+        if (period === 'day') factor = 1 / 7;
+        else if (period === 'week') factor = 1;
+
+        const creditSales = await Sale.findAll({
+          where: { isCredit: true, balanceDue: { [Op.gt]: 0 } },
+          attributes: ['weeklyPaymentAmount', 'balanceDue'],
+          raw: true
+        });
+
+        const projected = creditSales.reduce((acc, s) => {
+          const weekly = Number(s.weeklyPaymentAmount || 0);
+          if (!weekly) return acc;
+          const base = weekly * factor;
+          const cap = Number(s.balanceDue || 0);
+          return acc + Math.min(base, cap);
+        }, 0);
+
+        res.json({
+          period,
+          range: { start: rangeStart.toISOString(), end: rangeEnd.toISOString() },
+          projected: Number(projected.toFixed(2)),
+          real: Number(real.toFixed(2)),
+          difference: Number((projected - real).toFixed(2))
+        });
+      } catch (error) {
+        console.error('Error en /projected-vs-real-income:', error);
+        res.status(500).json({ message: 'Error al calcular ingresos proyectados vs reales.' });
+      }
+    }
+  );
+
   return router;
 };
 
