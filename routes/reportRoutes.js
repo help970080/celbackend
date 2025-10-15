@@ -1,178 +1,155 @@
-// routes/remindersRoutes.js
+// routes/reportRoutes.js
 const express = require('express');
-const router = express.Router();
-
-/**
- * Clasificación:
- *  - ALTO:    días de atraso >= 15
- *  - BAJO:    resto (<= 14, incluyendo 0 y negativos → por vencer/hoy)
- */
-function deriveSeverity(daysLate) {
-  return daysLate >= 15 ? 'ALTO' : 'BAJO';
-}
-
-function startOfDay(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-// calcula saldo real por venta: total - suma(pagos)
-function calcSaleBalance(sale) {
-  const total = Number(sale.totalAmount || 0);
-  const paid = (sale.payments || []).reduce((acc, p) => acc + Number(p.amount || 0), 0);
-  return Math.max(0, total - paid);
-}
-
-// nextDueDate robusto (respeta BD, si no: último pago o venta + 7 días)
-function calcNextDueDate(sale) {
-  if (sale.nextDueDate) return startOfDay(new Date(sale.nextDueDate));
-
-  const paymentsSorted = [...(sale.payments || [])].sort(
-    (a, b) => new Date(b.paymentDate) - new Date(a.paymentDate)
-  );
-  const base = paymentsSorted.length
-    ? startOfDay(new Date(paymentsSorted[0].paymentDate))
-    : (sale.saleDate ? startOfDay(new Date(sale.saleDate)) : startOfDay(new Date()));
-
-  return startOfDay(new Date(base.getTime() + 7 * 24 * 60 * 60 * 1000));
-}
 
 module.exports = (models) => {
-  const { Sale, Client, Payment } = models;
+  const router = express.Router();
+  const { Client, Sale, Payment, SaleItem, Product } = models;
 
-  /**
-   * GET /api/reminders/overdue
-   * Devuelve **UN registro por cliente** con saldo > 0 (sumando sus ventas activas).
-   * Severidad por el peor atraso entre sus ventas.
-   */
-  router.get('/overdue', async (req, res) => {
+  // Utilidades
+  const safeNum = (v) => Number(v || 0);
+  const fmt2 = (n) => Number(n.toFixed(2));
+
+  // --- GET /api/reports/client-statement/:clientId
+  // Estado de cuenta del cliente: ventas, pagos y totales.
+  router.get(['/client-statement/:clientId', '/client/:clientId/statement', '/statement/:clientId'], async (req, res) => {
     try {
-      const sales = await Sale.findAll({
-        // Importante: NO filtramos por isCredit aquí para no excluir casos reales con saldo.
-        // Si quieres forzarlo, añade where: { isCredit: true }
-        include: [
-          {
-            model: Client,
-            as: 'client',
-            required: true,
-            attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
-          },
-          {
-            model: Payment,
-            as: 'payments',
-            required: false,
-            attributes: ['id', 'amount', 'paymentDate', 'paymentMethod'],
-          },
-        ],
-        order: [['id', 'DESC']],
+      const clientId = Number(req.params.clientId);
+      if (!clientId) return res.status(400).json({ message: 'clientId inválido' });
+
+      const client = await Client.findByPk(clientId, {
+        attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
+        include: [{
+          model: Sale,
+          as: 'sales',                // <- en tu proyecto suele estar definido así
+          required: false,
+          attributes: ['id', 'totalAmount', 'downPayment', 'balanceDue', 'weeklyPaymentAmount', 'saleDate', 'nextDueDate', 'isCredit'],
+          include: [
+            { model: Payment, as: 'payments', required: false, attributes: ['id', 'amount', 'paymentDate', 'paymentMethod', 'note'] },
+            { 
+              model: SaleItem, as: 'saleItems', required: false, 
+              attributes: ['id', 'quantity', 'unitPrice', 'totalPrice'],
+              include: [{ model: Product, as: 'product', required: false, attributes: ['id', 'name', 'sku'] }]
+            }
+          ]
+        }]
       });
 
-      const today = startOfDay(new Date());
+      if (!client) return res.status(404).json({ message: 'Cliente no encontrado' });
 
-      // Agregamos por cliente
-      const byClient = new Map();
+      // Calcular totales por venta y totales generales
+      let grandTotal = 0;
+      let grandPaid = 0;
+      let grandBalance = 0;
 
-      for (const sale of sales) {
-        const client = sale.client;
-        if (!client) continue;
+      const sales = (client.sales || []).map(s => {
+        const total = safeNum(s.totalAmount);
+        const paid = (s.payments || []).reduce((acc, p) => acc + safeNum(p.amount), 0);
+        const balance = Math.max(0, total - paid);
 
-        // saldo real por venta
-        const saleBalance = calcSaleBalance(sale);
-        if (saleBalance <= 0) continue; // sólo ventas con saldo
+        grandTotal += total;
+        grandPaid += paid;
+        grandBalance += balance;
 
-        const nextDue = calcNextDueDate(sale);
-        const daysLate = Math.floor((today.getTime() - nextDue.getTime()) / (24 * 60 * 60 * 1000));
-        const severity = deriveSeverity(daysLate);
-
-        const key = client.id;
-        if (!byClient.has(key)) {
-          byClient.set(key, {
-            client: {
-              id: client.id,
-              name: client.name,
-              lastName: client.lastName,
-              phone: client.phone,
-              address: client.address,
-              city: client.city,
-            },
-            // agregados a nivel cliente
-            balanceDue: 0,
-            weeklyPaymentAmount: 0,     // puedes cambiar a promedio o máximo si prefieres
-            totalAmount: 0,
-            // métrica de severidad/atraso "peor" entre sus ventas
-            worstDaysLate: -Infinity,
-            worstSeverity: 'BAJO',
-            // próxima fecha más cercana (la mínima)
-            nextDueDate: null,
-            // opcional: lista de ventas para referencia
-            sales: [],
-          });
-        }
-
-        const agg = byClient.get(key);
-        agg.balanceDue += saleBalance;
-        agg.totalAmount += Number(sale.totalAmount || 0);
-
-        // usamos el mayor atraso para severidad del cliente
-        if (daysLate > agg.worstDaysLate) {
-          agg.worstDaysLate = daysLate;
-          agg.worstSeverity = severity;
-        }
-
-        // tomamos la fecha de pago más próxima (mínima)
-        if (!agg.nextDueDate || nextDue < new Date(agg.nextDueDate)) {
-          agg.nextDueDate = nextDue.toISOString();
-        }
-
-        // conservar alguna referencia de semanal (elige mayor para “capacidad de pago”)
-        const weekly = Number(sale.weeklyPaymentAmount || 0);
-        if (weekly > agg.weeklyPaymentAmount) {
-          agg.weeklyPaymentAmount = weekly;
-        }
-
-        agg.sales.push({
-          id: sale.id,
-          saleBalance,
-          totalAmount: Number(sale.totalAmount || 0),
-          weeklyPaymentAmount: weekly,
-          nextDueDate: nextDue.toISOString(),
-          daysLate,
-          severity,
-        });
-      }
-
-      // construir salida (un registro por cliente)
-      const out = [];
-      for (const [, v] of byClient) {
-        if (v.balanceDue <= 0) continue; // por seguridad
-        out.push({
-          client: v.client,
-          sale: {
-            // valores representativos a nivel cliente
-            id: v.sales.length ? v.sales[0].id : null, // opcional
-            balanceDue: Number(v.balanceDue.toFixed(2)),
-            weeklyPaymentAmount: Number(v.weeklyPaymentAmount || 0),
-            totalAmount: Number(v.totalAmount || 0),
-            nextDueDate: v.nextDueDate,
-          },
-          daysLate: v.worstDaysLate,
-          severity: v.worstSeverity, // "ALTO" si alguna venta está muy vencida
-          // útil para depurar si lo necesitas en el front (puedes omitir)
-          sales: v.sales,
-        });
-      }
-
-      // Orden: primero ALTO, luego BAJO; dentro, por días de atraso desc/fecha próxima
-      out.sort((a, b) => {
-        if (a.severity !== b.severity) return a.severity === 'ALTO' ? -1 : 1;
-        return (b.daysLate || 0) - (a.daysLate || 0);
+        return {
+          id: s.id,
+          saleDate: s.saleDate,
+          nextDueDate: s.nextDueDate,
+          isCredit: !!s.isCredit,
+          weeklyPaymentAmount: safeNum(s.weeklyPaymentAmount),
+          totalAmount: fmt2(total),
+          paidAmount: fmt2(paid),
+          balanceDue: fmt2(balance),
+          downPayment: fmt2(safeNum(s.downPayment)),
+          items: (s.saleItems || []).map(it => ({
+            id: it.id,
+            quantity: safeNum(it.quantity),
+            unitPrice: fmt2(safeNum(it.unitPrice)),
+            totalPrice: fmt2(safeNum(it.totalPrice)),
+            product: it.product ? { id: it.product.id, name: it.product.name, sku: it.product.sku } : null
+          })),
+          payments: (s.payments || []).map(p => ({
+            id: p.id,
+            amount: fmt2(safeNum(p.amount)),
+            paymentDate: p.paymentDate,
+            paymentMethod: p.paymentMethod || null,
+            note: p.note || null
+          }))
+        };
       });
 
-      res.json(out);
+      // Ordena pagos/ventas por fecha descendente para que el front los muestre “bonito”
+      sales.sort((a, b) => new Date(b.saleDate || 0) - new Date(a.saleDate || 0));
+
+      return res.json({
+        client: {
+          id: client.id,
+          name: client.name,
+          lastName: client.lastName,
+          phone: client.phone,
+          address: client.address,
+          city: client.city
+        },
+        summary: {
+          total: fmt2(grandTotal),
+          paid: fmt2(grandPaid),
+          balance: fmt2(grandBalance)
+        },
+        sales
+      });
     } catch (err) {
-      console.error('GET /api/reminders/overdue error:', err);
-      res.status(500).json({ message: 'Error al calcular recordatorios de pago.' });
+      console.error('GET /api/reports/client-statement error:', err);
+      return res.status(500).json({ message: 'Error al generar estado de cuenta' });
+    }
+  });
+
+  // --- GET /api/reports/client-risk/:clientId
+  // Devuelve un nivel de riesgo simple basado en días de atraso "peor" y saldo.
+  router.get(['/client-risk/:clientId', '/client/:clientId/risk'], async (req, res) => {
+    try {
+      const clientId = Number(req.params.clientId);
+      if (!clientId) return res.status(400).json({ message: 'clientId inválido' });
+
+      // Trae ventas y pagos para calcular atraso y saldo
+      const sales = await Sale.findAll({
+        where: { clientId },
+        attributes: ['id', 'totalAmount', 'weeklyPaymentAmount', 'saleDate', 'nextDueDate', 'isCredit'],
+        include: [{ model: Payment, as: 'payments', required: false, attributes: ['id', 'amount', 'paymentDate'] }]
+      });
+
+      if (!sales.length) {
+        return res.json({ clientId, risk: 'SIN_DATOS', daysLate: 0, balance: 0 });
+      }
+
+      const today = new Date(); today.setHours(0,0,0,0);
+
+      let worstDaysLate = -Infinity;
+      let balance = 0;
+
+      for (const s of sales) {
+        const total = safeNum(s.totalAmount);
+        const paid = (s.payments || []).reduce((acc, p) => acc + safeNum(p.amount), 0);
+        const bal = Math.max(0, total - paid);
+        balance += bal;
+
+        // calcula atraso simple
+        let ref = s.nextDueDate ? new Date(s.nextDueDate) : (s.saleDate ? new Date(s.saleDate) : today);
+        ref.setHours(0,0,0,0);
+        const daysLate = Math.floor((today - ref) / (24 * 60 * 60 * 1000));
+        if (daysLate > worstDaysLate) worstDaysLate = daysLate;
+      }
+
+      let risk = 'BAJO';
+      if (worstDaysLate >= 15) risk = 'ALTO';
+
+      return res.json({
+        clientId,
+        risk,
+        daysLate: worstDaysLate,
+        balance: fmt2(balance)
+      });
+    } catch (err) {
+      console.error('GET /api/reports/client-risk error:', err);
+      return res.status(500).json({ message: 'Error al calcular riesgo' });
     }
   });
 
