@@ -1,157 +1,359 @@
-// routes/reportRoutes.js
+// Archivo: routes/reportRoutes.js
+
 const express = require('express');
+const router = express.Router();
+const { Op, Sequelize } = require('sequelize');
+const moment = require('moment-timezone');
+const authorizeRoles = require('../middleware/roleMiddleware');
 
-module.exports = (models) => {
-  const router = express.Router();
-  const { Client, Sale, Payment, SaleItem, Product } = models;
+let Sale, Client, Product, Payment, SaleItem, User;
+const TIMEZONE = "America/Mexico_City";
 
-  // Utilidades
-  const safeNum = (v) => Number(v || 0);
-  const fmt2 = (n) => Number(n.toFixed(2));
+// Calcula la próxima fecha de vencimiento según frecuencia de pago
+const getNextDueDate = (lastPaymentDate, frequency) => {
+  const baseDate = moment(lastPaymentDate).tz(TIMEZONE);
+  switch (frequency) {
+    case 'daily':       return baseDate.add(1, 'days').endOf('day');
+    case 'fortnightly': return baseDate.add(15, 'days').endOf('day');
+    case 'monthly':     return baseDate.add(1, 'months').endOf('day');
+    case 'weekly':
+    default:            return baseDate.add(7, 'days').endOf('day');
+  }
+};
 
-  // --- GET /api/reports/client-statement/:clientId
-  // Estado de cuenta del cliente: ventas, pagos y totales.
-  router.get(['/client-statement/:clientId', '/client/:clientId/statement', '/statement/:clientId'], async (req, res) => {
-    try {
-      const clientId = Number(req.params.clientId);
-      if (!clientId) return res.status(400).json({ message: 'clientId inválido' });
+const initReportRoutes = (models) => {
+  Sale     = models.Sale;
+  Client   = models.Client;
+  Product  = models.Product;
+  Payment  = models.Payment;
+  SaleItem = models.SaleItem;
+  User     = models.User;
 
-      const client = await Client.findByPk(clientId, {
-        attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
-        include: [{
-          model: Sale,
-          as: 'sales',                // <- en tu proyecto suele estar definido así
-          required: false,
-          attributes: ['id', 'totalAmount', 'downPayment', 'balanceDue', 'weeklyPaymentAmount', 'saleDate', 'nextDueDate', 'isCredit'],
-          include: [
-            { model: Payment, as: 'payments', required: false, attributes: ['id', 'amount', 'paymentDate', 'paymentMethod', 'note'] },
-            { 
-              model: SaleItem, as: 'saleItems', required: false, 
-              attributes: ['id', 'quantity', 'unitPrice', 'totalPrice'],
-              include: [{ model: Product, as: 'product', required: false, attributes: ['id', 'name', 'sku'] }]
+  // Dashboard de status de clientes (al corriente / por vencer / vencidos / pagados)
+  router.get(
+    '/client-status-dashboard',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const allCreditSales = await Sale.findAll({
+          where: { isCredit: true },
+          include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }]
+        });
+
+        let clientsStatus = { alCorriente: new Set(), porVencer: new Set(), vencidos: new Set(), pagados: new Set() };
+        const today = moment().tz(TIMEZONE).startOf('day');
+
+        for (const sale of allCreditSales) {
+          if (sale.balanceDue <= 0) {
+            clientsStatus.pagados.add(sale.clientId);
+            continue;
+          }
+          const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
+          const nextPaymentDueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
+
+          if (nextPaymentDueDate.isBefore(today)) {
+            clientsStatus.vencidos.add(sale.clientId);
+          } else if (nextPaymentDueDate.diff(today, 'days') < 7) {
+            clientsStatus.porVencer.add(sale.clientId);
+          } else {
+            clientsStatus.alCorriente.add(sale.clientId);
+          }
+        }
+        // Limpieza de duplicados entre categorías
+        clientsStatus.vencidos.forEach(id => { clientsStatus.porVencer.delete(id); clientsStatus.alCorriente.delete(id); });
+        clientsStatus.porVencer.forEach(id => clientsStatus.alCorriente.delete(id));
+
+        res.json({
+          alCorriente: clientsStatus.alCorriente.size,
+          porVencer:   clientsStatus.porVencer.size,
+          vencidos:    clientsStatus.vencidos.size,
+          pagados:     clientsStatus.pagados.size,
+          totalActivos: clientsStatus.alCorriente.size + clientsStatus.porVencer.size + clientsStatus.vencidos.size
+        });
+      } catch (error) {
+        console.error('Error en /client-status-dashboard:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
+      }
+    }
+  );
+
+  // Riesgo por cliente
+  router.get(
+    '/client-risk/:clientId',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']),
+    async (req, res) => {
+      const { clientId } = req.params;
+      if (isNaN(parseInt(clientId, 10))) {
+        return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+      }
+      try {
+        const allCreditSales = await Sale.findAll({
+          where: { clientId, isCredit: true },
+          include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }]
+        });
+
+        let riskCategory = 'BAJO';
+        let riskDetails = 'No hay datos de crédito o todas las deudas están saldadas.';
+
+        if (allCreditSales.some(s => s.balanceDue > 0)) {
+          const today = moment().tz(TIMEZONE).startOf('day');
+          const hasOverdueSale = allCreditSales.some(sale => {
+            if (sale.balanceDue > 0) {
+              const lastPaymentDate = sale.payments.length > 0 ? sale.payments[0].paymentDate : sale.saleDate;
+              const dueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
+              return dueDate.isBefore(today);
             }
-          ]
-        }]
-      });
+            return false;
+          });
 
-      if (!client) return res.status(404).json({ message: 'Cliente no encontrado' });
-
-      // Calcular totales por venta y totales generales
-      let grandTotal = 0;
-      let grandPaid = 0;
-      let grandBalance = 0;
-
-      const sales = (client.sales || []).map(s => {
-        const total = safeNum(s.totalAmount);
-        const paid = (s.payments || []).reduce((acc, p) => acc + safeNum(p.amount), 0);
-        const balance = Math.max(0, total - paid);
-
-        grandTotal += total;
-        grandPaid += paid;
-        grandBalance += balance;
-
-        return {
-          id: s.id,
-          saleDate: s.saleDate,
-          nextDueDate: s.nextDueDate,
-          isCredit: !!s.isCredit,
-          weeklyPaymentAmount: safeNum(s.weeklyPaymentAmount),
-          totalAmount: fmt2(total),
-          paidAmount: fmt2(paid),
-          balanceDue: fmt2(balance),
-          downPayment: fmt2(safeNum(s.downPayment)),
-          items: (s.saleItems || []).map(it => ({
-            id: it.id,
-            quantity: safeNum(it.quantity),
-            unitPrice: fmt2(safeNum(it.unitPrice)),
-            totalPrice: fmt2(safeNum(it.totalPrice)),
-            product: it.product ? { id: it.product.id, name: it.product.name, sku: it.product.sku } : null
-          })),
-          payments: (s.payments || []).map(p => ({
-            id: p.id,
-            amount: fmt2(safeNum(p.amount)),
-            paymentDate: p.paymentDate,
-            paymentMethod: p.paymentMethod || null,
-            note: p.note || null
-          }))
-        };
-      });
-
-      // Ordena pagos/ventas por fecha descendente para que el front los muestre “bonito”
-      sales.sort((a, b) => new Date(b.saleDate || 0) - new Date(a.saleDate || 0));
-
-      return res.json({
-        client: {
-          id: client.id,
-          name: client.name,
-          lastName: client.lastName,
-          phone: client.phone,
-          address: client.address,
-          city: client.city
-        },
-        summary: {
-          total: fmt2(grandTotal),
-          paid: fmt2(grandPaid),
-          balance: fmt2(grandBalance)
-        },
-        sales
-      });
-    } catch (err) {
-      console.error('GET /api/reports/client-statement error:', err);
-      return res.status(500).json({ message: 'Error al generar estado de cuenta' });
-    }
-  });
-
-  // --- GET /api/reports/client-risk/:clientId
-  // Devuelve un nivel de riesgo simple basado en días de atraso "peor" y saldo.
-  router.get(['/client-risk/:clientId', '/client/:clientId/risk'], async (req, res) => {
-    try {
-      const clientId = Number(req.params.clientId);
-      if (!clientId) return res.status(400).json({ message: 'clientId inválido' });
-
-      // Trae ventas y pagos para calcular atraso y saldo
-      const sales = await Sale.findAll({
-        where: { clientId },
-        attributes: ['id', 'totalAmount', 'weeklyPaymentAmount', 'saleDate', 'nextDueDate', 'isCredit'],
-        include: [{ model: Payment, as: 'payments', required: false, attributes: ['id', 'amount', 'paymentDate'] }]
-      });
-
-      if (!sales.length) {
-        return res.json({ clientId, risk: 'SIN_DATOS', daysLate: 0, balance: 0 });
+          if (hasOverdueSale) {
+            riskCategory = 'ALTO';
+            riskDetails = 'Tiene una o más ventas a crédito vencidas.';
+          } else {
+            riskCategory = 'BAJO';
+            riskDetails = 'Sus pagos están al corriente.';
+          }
+        }
+        res.json({ riskCategory, riskDetails });
+      } catch (error) {
+        console.error('Error en /client-risk:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
       }
-
-      const today = new Date(); today.setHours(0,0,0,0);
-
-      let worstDaysLate = -Infinity;
-      let balance = 0;
-
-      for (const s of sales) {
-        const total = safeNum(s.totalAmount);
-        const paid = (s.payments || []).reduce((acc, p) => acc + safeNum(p.amount), 0);
-        const bal = Math.max(0, total - paid);
-        balance += bal;
-
-        // calcula atraso simple
-        let ref = s.nextDueDate ? new Date(s.nextDueDate) : (s.saleDate ? new Date(s.saleDate) : today);
-        ref.setHours(0,0,0,0);
-        const daysLate = Math.floor((today - ref) / (24 * 60 * 60 * 1000));
-        if (daysLate > worstDaysLate) worstDaysLate = daysLate;
-      }
-
-      let risk = 'BAJO';
-      if (worstDaysLate >= 15) risk = 'ALTO';
-
-      return res.json({
-        clientId,
-        risk,
-        daysLate: worstDaysLate,
-        balance: fmt2(balance)
-      });
-    } catch (err) {
-      console.error('GET /api/reports/client-risk error:', err);
-      return res.status(500).json({ message: 'Error al calcular riesgo' });
     }
-  });
+  );
+
+  // Resumen global
+  router.get(
+    '/summary',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const totalBalanceDue = await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
+        const activeCreditSalesCount = await Sale.count({ where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } });
+        const totalPaymentsReceived = await Payment.sum('amount');
+        const totalClientsCount = await Client.count();
+        const totalSalesCount = await Sale.count();
+        res.json({
+          totalBalanceDue: totalBalanceDue || 0,
+          activeCreditSalesCount: activeCreditSalesCount || 0,
+          totalPaymentsReceived: totalPaymentsReceived || 0,
+          totalClientsCount: totalClientsCount || 0,
+          totalSalesCount: totalSalesCount || 0
+        });
+      } catch (error) {
+        console.error('Error en /summary:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
+      }
+    }
+  );
+
+  // Estado de cuenta por cliente
+  router.get(
+    '/client-statement/:clientId',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports', 'collector_agent']),
+    async (req, res) => {
+      const { clientId } = req.params;
+      if (isNaN(parseInt(clientId, 10))) {
+        return res.status(400).json({ message: 'El ID del cliente debe ser un número válido.' });
+      }
+      try {
+        const client = await Client.findByPk(clientId);
+        if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
+
+        const sales = await Sale.findAll({
+          where: { clientId },
+          include: [
+            { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+            { model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }
+          ],
+          order: [['saleDate', 'ASC']]
+        });
+
+        const totalClientBalanceDue = sales.reduce((acc, s) => acc + (s.isCredit ? s.balanceDue : 0), 0);
+        res.json({ client, sales, totalClientBalanceDue: parseFloat(totalClientBalanceDue.toFixed(2)) });
+      } catch (error) {
+        console.error('Error en /client-statement:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
+      }
+    }
+  );
+
+  // Créditos pendientes
+  router.get(
+    '/pending-credits',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const pendingCredits = await Sale.findAll({
+          where: { isCredit: true, balanceDue: { [Op.gt]: 0 } },
+          include: [
+            { model: Client, as: 'client', attributes: ['name', 'lastName'] },
+            { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', attributes: ['name'] }] },
+            { model: Payment, as: 'payments', attributes: ['id'] }
+          ],
+          order: [['saleDate', 'ASC']]
+        });
+        res.json(pendingCredits);
+      } catch (error) {
+        console.error('Error en /pending-credits:', error);
+        res.status(500).json({ message: 'Error interno del servidor al obtener créditos pendientes.' });
+      }
+    }
+  );
+
+  // Ventas por rango de fecha
+  router.get(
+    '/sales-by-date-range',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const { startDate, endDate } = req.query;
+        const sales = await Sale.findAll({
+          where: {
+            saleDate: { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] }
+          },
+          include: [
+            { model: Client, as: 'client' },
+            { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] }
+          ],
+          order: [['saleDate', 'DESC']]
+        });
+        res.json(sales);
+      } catch {
+        res.status(500).json({ message: 'Error al obtener ventas por rango de fecha.' });
+      }
+    }
+  );
+
+  // Pagos por rango de fecha
+  router.get(
+    '/payments-by-date-range',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const { startDate, endDate } = req.query;
+        const payments = await Payment.findAll({
+          where: {
+            paymentDate: { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] }
+          },
+          include: [{ model: Sale, as: 'sale', include: [{ model: Client, as: 'client' }] }],
+          order: [['paymentDate', 'DESC']]
+        });
+        res.json(payments);
+      } catch {
+        res.status(500).json({ message: 'Error al obtener pagos por rango de fecha.' });
+      }
+    }
+  );
+
+  // Ventas acumuladas (por día/semana/mes)
+  router.get(
+    '/sales-accumulated',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const { period = 'day', startDate, endDate } = req.query;
+        const whereClause = {};
+        if (startDate && endDate) {
+          whereClause.saleDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+        }
+        const results = await Sale.findAll({
+          attributes: [
+            [Sequelize.fn('date_trunc', period, Sequelize.col('saleDate')), period],
+            [Sequelize.fn('sum', Sequelize.col('totalAmount')), 'totalAmount'],
+            [Sequelize.fn('count', Sequelize.col('id')), 'count']
+          ],
+          where: whereClause,
+          group: [Sequelize.fn('date_trunc', period, Sequelize.col('saleDate'))],
+          order: [[Sequelize.fn('date_trunc', period, Sequelize.col('saleDate')), 'DESC']],
+          raw: true
+        });
+        res.json(results);
+      } catch {
+        res.status(500).json({ message: 'Error al obtener ventas acumuladas.' });
+      }
+    }
+  );
+
+  // Pagos acumulados (por día/semana/mes)
+  router.get(
+    '/payments-accumulated',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const { period = 'day', startDate, endDate } = req.query;
+        const whereClause = {};
+        if (startDate && endDate) {
+          whereClause.paymentDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+        }
+        const results = await Payment.findAll({
+          attributes: [
+            [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), period],
+            [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
+            [Sequelize.fn('count', Sequelize.col('id')), 'count']
+          ],
+          where: whereClause,
+          group: [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate'))],
+          order: [[Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), 'DESC']],
+          raw: true
+        });
+        res.json(results);
+      } catch {
+        res.status(500).json({ message: 'Error al obtener pagos acumulados.' });
+      }
+    }
+  );
+
+  // Cobranza por agente (collector_agent)
+  router.get(
+    '/collections-by-agent',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const { period = 'day', startDate, endDate } = req.query;
+        const whereClause = {};
+        if (startDate && endDate) {
+          whereClause.paymentDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
+        }
+
+        const results = await Payment.findAll({
+          attributes: [
+            [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), period],
+            [Sequelize.col('sale.assignedCollector.username'), 'collectorName'],
+            [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
+            [Sequelize.fn('count', Sequelize.col('Payment.id')), 'count']
+          ],
+          include: [{
+            model: Sale,
+            as: 'sale',
+            attributes: [],
+            include: [{
+              model: User,
+              as: 'assignedCollector',
+              where: { role: 'collector_agent' },
+              attributes: []
+            }]
+          }],
+          where: whereClause,
+          group: [
+            Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')),
+            Sequelize.col('sale.assignedCollector.username')
+          ],
+          order: [
+            [Sequelize.fn('date_trunc', period, Sequelize.col('paymentDate')), 'DESC'],
+            [Sequelize.col('sale.assignedCollector.username'), 'ASC']
+          ],
+          raw: true
+        });
+        res.json(results);
+      } catch (error) {
+        console.error('Error en /collections-by-agent:', error);
+        res.status(500).json({ message: 'Error al obtener cobranza por gestor.' });
+      }
+    }
+  );
 
   return router;
 };
+
+module.exports = initReportRoutes;
