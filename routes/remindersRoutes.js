@@ -25,7 +25,7 @@ function calcSaleBalance(sale) {
   return bal > 0 ? bal : 0;
 }
 
-// nextDueDate robusto: respeta BD, si no: último pago o venta + 7 días
+// nextDueDate robusto: respeta BD; si no hay, usa último pago o fecha de venta + 7 días
 function calcNextDueDate(sale) {
   if (sale.nextDueDate) return startOfDay(new Date(sale.nextDueDate));
   const paymentsSorted = [...(sale.payments || [])].sort(
@@ -38,90 +38,57 @@ function calcNextDueDate(sale) {
 }
 
 module.exports = (models) => {
-  const { Client, Sale, Payment } = models;
+  const { Sale, Client, Payment } = models;
 
   /**
    * GET /api/reminders/overdue
    * Devuelve **un registro por cliente** con saldo > 0 (sumando todas sus ventas),
    * severidad por el peor atraso entre sus ventas.
+   *
+   * Nota: partimos de Sale.findAll (NO de Client) para no depender del alias hasMany('sales').
    */
   router.get('/overdue', async (req, res) => {
     try {
-      const clients = await Client.findAll({
-        attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
+      const sales = await Sale.findAll({
+        // No filtramos por isCredit para que cuadre con tu Excel.
         include: [
           {
-            model: Sale,
-            as: 'sales',
-            required: false, // traer todos los clientes aunque no tengan ventas
-            attributes: ['id', 'totalAmount', 'weeklyPaymentAmount', 'saleDate', 'nextDueDate', 'isCredit'],
-            include: [
-              {
-                model: Payment,
-                as: 'payments',
-                required: false,
-                attributes: ['id', 'amount', 'paymentDate', 'paymentMethod'],
-              },
-            ],
+            model: Client,
+            as: 'client',            // <— este alias sí existe en tu app
+            required: true,
+            attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
+          },
+          {
+            model: Payment,
+            as: 'payments',          // <— este alias también existe
+            required: false,
+            attributes: ['id', 'amount', 'paymentDate', 'paymentMethod'],
           },
         ],
         order: [['id', 'DESC']],
       });
 
       const today = startOfDay(new Date());
-      const out = [];
 
-      for (const c of clients) {
-        const sales = Array.isArray(c.sales) ? c.sales : [];
+      // Agregado por cliente (key = client.id)
+      const byClient = new Map();
 
-        // Agregados por cliente
-        let clientBalance = 0;
-        let clientWeekly = 0;           // tomamos el mayor semanal como referencia de cobro
-        let clientTotalAmount = 0;
-        let worstDaysLate = -Infinity;  // peor atraso
-        let worstSeverity = 'BAJO';
-        let nextDueClosest = null;      // próxima fecha más cercana (mínima)
-        const salesSnapshot = [];
+      for (const s of sales) {
+        const c = s.client;
+        if (!c) continue;
 
-        for (const s of sales) {
-          const saleBalance = calcSaleBalance(s);
-          if (saleBalance <= 0) continue; // ignorar ventas sin saldo
+        // saldo real por venta
+        const saleBalance = calcSaleBalance(s);
+        if (saleBalance <= 0) continue; // sólo ventas con saldo positivo
 
-          // acumular al cliente
-          clientBalance += saleBalance;
-          clientTotalAmount += Number(s.totalAmount || 0);
+        // cálculo de fechas y atraso
+        const nextDue = calcNextDueDate(s);
+        const daysLate = Math.floor((today.getTime() - nextDue.getTime()) / (24 * 60 * 60 * 1000));
+        const sev = deriveSeverity(daysLate);
 
-          // weekly mayor
-          const weekly = Number(s.weeklyPaymentAmount || 0);
-          if (weekly > clientWeekly) clientWeekly = weekly;
-
-          const nextDue = calcNextDueDate(s);
-          if (!nextDueClosest || nextDue < new Date(nextDueClosest)) {
-            nextDueClosest = nextDue.toISOString();
-          }
-
-          const daysLate = Math.floor((today.getTime() - nextDue.getTime()) / (24 * 60 * 60 * 1000));
-          const sev = deriveSeverity(daysLate);
-          if (daysLate > worstDaysLate) {
-            worstDaysLate = daysLate;
-            worstSeverity = sev;
-          }
-
-          salesSnapshot.push({
-            id: s.id,
-            saleBalance,
-            totalAmount: Number(s.totalAmount || 0),
-            weeklyPaymentAmount: weekly,
-            nextDueDate: nextDue.toISOString(),
-            daysLate,
-            severity: sev,
-            isCredit: !!s.isCredit,
-          });
-        }
-
-        // Solo clientes con saldo > 0 (sumando todas sus ventas)
-        if (clientBalance > 0) {
-          out.push({
+        const key = c.id;
+        if (!byClient.has(key)) {
+          byClient.set(key, {
             client: {
               id: c.id,
               name: c.name,
@@ -130,18 +97,64 @@ module.exports = (models) => {
               address: c.address,
               city: c.city,
             },
-            sale: {
-              id: salesSnapshot.length ? salesSnapshot[0].id : null, // referencia (opcional)
-              balanceDue: Number(clientBalance.toFixed(2)),
-              weeklyPaymentAmount: Number(clientWeekly || 0),
-              totalAmount: Number(clientTotalAmount || 0),
-              nextDueDate: nextDueClosest,
-            },
-            daysLate: worstDaysLate,
-            severity: worstSeverity, // peor atraso define el riesgo del cliente
-            sales: salesSnapshot,    // para depurar si lo necesitas en el front
+            balanceDue: 0,
+            weeklyPaymentAmount: 0,   // referencia (tomamos el mayor)
+            totalAmount: 0,
+            worstDaysLate: -Infinity,
+            worstSeverity: 'BAJO',
+            nextDueDate: null,        // más cercana (mínima)
+            sales: [],
           });
         }
+
+        const agg = byClient.get(key);
+        agg.balanceDue += saleBalance;
+        agg.totalAmount += Number(s.totalAmount || 0);
+
+        // semanal: tomamos el mayor para referencia de cobro
+        const weekly = Number(s.weeklyPaymentAmount || 0);
+        if (weekly > agg.weeklyPaymentAmount) agg.weeklyPaymentAmount = weekly;
+
+        // próxima fecha más cercana
+        if (!agg.nextDueDate || nextDue < new Date(agg.nextDueDate)) {
+          agg.nextDueDate = nextDue.toISOString();
+        }
+
+        // peor atraso para severidad del cliente
+        if (daysLate > agg.worstDaysLate) {
+          agg.worstDaysLate = daysLate;
+          agg.worstSeverity = sev;
+        }
+
+        agg.sales.push({
+          id: s.id,
+          saleBalance,
+          totalAmount: Number(s.totalAmount || 0),
+          weeklyPaymentAmount: weekly,
+          nextDueDate: nextDue.toISOString(),
+          daysLate,
+          severity: sev,
+          isCredit: !!s.isCredit,
+        });
+      }
+
+      // Construimos salida: un registro por cliente con saldo > 0
+      const out = [];
+      for (const [, v] of byClient) {
+        if (v.balanceDue <= 0) continue;
+        out.push({
+          client: v.client,
+          sale: {
+            id: v.sales.length ? v.sales[0].id : null, // referencia opcional
+            balanceDue: Number(v.balanceDue.toFixed(2)),
+            weeklyPaymentAmount: Number(v.weeklyPaymentAmount || 0),
+            totalAmount: Number(v.totalAmount || 0),
+            nextDueDate: v.nextDueDate,
+          },
+          daysLate: v.worstDaysLate,
+          severity: v.worstSeverity, // ALTO si alguna venta está muy vencida
+          sales: v.sales,            // útil para depurar si lo necesitas
+        });
       }
 
       // Orden: ALTO primero; dentro, por mayor atraso
