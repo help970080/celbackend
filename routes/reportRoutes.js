@@ -25,11 +25,10 @@ function getNextDueDate(lastPaymentDate, frequency) {
   }
 }
 
-// Número seguro - versión mejorada
+// Número seguro - versión mejorada (CRÍTICO para evitar TypeError)
 const N = (v) => {
   if (v === null || v === undefined || v === '') return 0;
   const num = Number(v);
-  // Importante: Chequeo de isNaN para strings que no son números y isFinite para Infinito/NaN
   return Number.isFinite(num) ? num : 0;
 };
 
@@ -49,7 +48,7 @@ const initReportRoutes = (models) => {
   User     = models.User;
 
   // -------------------------
-  // Resumen global simple (El origen más probable del fallo de toLocaleString)
+  // Resumen global simple
   // -------------------------
   router.get(
     '/summary',
@@ -78,7 +77,7 @@ const initReportRoutes = (models) => {
   );
 
   // ---------------------------------------------------
-  // Ingresos proyectados vs reales (Ruta que falla en /admin/reports)
+  // Ingresos proyectados vs reales 
   // ---------------------------------------------------
   router.get(
     '/projected-vs-real-income',
@@ -93,7 +92,7 @@ const initReportRoutes = (models) => {
           rangeStart = startOfDay(new Date(start));
           rangeEnd   = endOfDay(new Date(end));
         } else {
-          // Lógica de período por defecto (día, semana, mes actual)
+          // Lógica de período por defecto
           const today = startOfDay(new Date());
           const s = new Date(today), e = new Date(today);
           if (period === 'week') {
@@ -147,17 +146,15 @@ const initReportRoutes = (models) => {
             totalAdvanceAmount = Math.abs(difference); // Proyectado < Real -> Adelanto
         }
 
-
         res.json({
           totalProjectedIncome: toSafeFixed(totalProjectedIncome),
           totalRealIncome: toSafeFixed(totalRealIncome),
-          // Se devuelven los montos explícitamente para el frontend
           totalOverdueAmount: toSafeFixed(totalOverdueAmount),
           totalAdvanceAmount: toSafeFixed(totalAdvanceAmount),
         });
       } catch (err) {
         console.error('projected-vs-real-income', err);
-        // Devolver un objeto vacío o con ceros si hay un error para evitar el fallo del frontend
+        // Devolver ceros seguros si hay un error
         res.status(500).json({ 
             totalProjectedIncome: 0,
             totalRealIncome: 0,
@@ -170,7 +167,7 @@ const initReportRoutes = (models) => {
   );
   
   // -------------------------------
-  // Dashboard de status de clientes (Usa getNextDueDate)
+  // Dashboard de status de clientes
   // -------------------------------
   router.get(
     '/client-status-dashboard',
@@ -213,7 +210,9 @@ const initReportRoutes = (models) => {
     }
   );
   
-  // ... (El resto de las rutas de reportes se mantienen igual) ...
+  // RUTA FALTANTE (se mantiene la estructura)
+  // Debes implementar las rutas de reporte faltantes aquí (ej. sales-by-date-range, collections-by-agent)
+  // Si las rutas no existen, el 404 es correcto.
 
   // Se exportan las utilidades para ser usadas en remindersRoutes.js
   module.exports.startOfDay = startOfDay;
