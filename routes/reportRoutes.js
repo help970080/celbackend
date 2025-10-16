@@ -24,8 +24,18 @@ function getNextDueDate(lastPaymentDate, frequency) {
   }
 }
 
-// Número seguro
-const N = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+// Número seguro - versión mejorada
+const N = (v) => {
+  if (v === null || v === undefined || v === '') return 0;
+  const num = Number(v);
+  return Number.isFinite(num) ? num : 0;
+};
+
+// Función para formatear de forma segura con decimales
+const toSafeFixed = (value, decimals = 2) => {
+  const num = N(value);
+  return Number(num.toFixed(decimals));
+};
 
 // ====== INIT ======
 const initReportRoutes = (models) => {
@@ -116,7 +126,12 @@ const initReportRoutes = (models) => {
         }
 
         const riskCategory = worstDays >= 15 ? 'ALTO' : 'BAJO';
-        res.json({ clientId, riskCategory, daysLate: worstDays, balance: Number(balance.toFixed(2)) });
+        res.json({ 
+          clientId, 
+          riskCategory, 
+          daysLate: worstDays, 
+          balance: toSafeFixed(balance) 
+        });
       } catch (err) {
         console.error('client-risk', err);
         res.status(500).json({ message: 'Error interno del servidor.' });
@@ -139,9 +154,9 @@ const initReportRoutes = (models) => {
         const totalSalesCount   = await Sale.count() || 0;
 
         res.json({
-          totalBalanceDue: Number(totalBalanceDue),
+          totalBalanceDue: N(totalBalanceDue),
           activeCreditSalesCount,
-          totalPaymentsReceived: Number(totalPaymentsReceived),
+          totalPaymentsReceived: N(totalPaymentsReceived),
           totalClientsCount,
           totalSalesCount,
         });
@@ -183,7 +198,7 @@ const initReportRoutes = (models) => {
             phone: client.phone, address: client.address, city: client.city
           },
           sales,
-          totalClientBalanceDue: Number(totalClientBalanceDue.toFixed(2)),
+          totalClientBalanceDue: toSafeFixed(totalClientBalanceDue),
         });
       } catch (err) {
         console.error('client-statement', err);
@@ -432,9 +447,9 @@ const initReportRoutes = (models) => {
         res.json({
           period,
           range: { start: rangeStart.toISOString(), end: rangeEnd.toISOString() },
-          projected: Number(projected.toFixed(2)),
-          real: Number(real.toFixed(2)),
-          difference: Number((projected - real).toFixed(2)),
+          projected: toSafeFixed(projected),
+          real: toSafeFixed(real),
+          difference: toSafeFixed(projected - real),
         });
       } catch (err) {
         console.error('projected-vs-real-income', err);
