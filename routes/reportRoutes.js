@@ -201,7 +201,7 @@ const initReportRoutes = (models) => {
         }
         // limpiar solapamientos
         for (const id of set.vencidos) { set.porVencer.delete(id); set.alCorriente.delete(id); }
-        for (const id of set.porVencidos) set.alCorriente.delete(id);
+        for (const id of set.porVencer) set.alCorriente.delete(id);
 
         res.json({
           alCorriente: set.alCorriente.size,
@@ -212,7 +212,11 @@ const initReportRoutes = (models) => {
         });
       } catch (err) {
         console.error('client-status-dashboard', err);
-        res.status(500).json({ message: 'Error interno del servidor.' });
+        // CRÍTICO: Devolver un objeto con ceros si falla para evitar el error de renderizado
+        res.status(500).json({ 
+            alCorriente: 0, porVencer: 0, vencidos: 0, pagados: 0, totalActivos: 0,
+            message: 'Error interno del servidor.'
+        });
       }
     }
   );
@@ -392,14 +396,9 @@ const initReportRoutes = (models) => {
                     [Sequelize.col('sale->assignedCollector.username'), 'collectorName'] 
                 ],
                 include: [{
-                    model: Sale, 
-                    as: 'sale', 
-                    required: true,
+                    model: Sale, as: 'sale', required: true,
                     include: [{ 
-                        model: User, 
-                        as: 'assignedCollector', 
-                        attributes: [], 
-                        required: true, 
+                        model: User, as: 'assignedCollector', attributes: [], required: true, 
                         where: { role: 'collector_agent' } // Filtrar solo gestores
                     }]
                 }],
@@ -423,6 +422,7 @@ const initReportRoutes = (models) => {
         } catch (err) {
             console.error('Error CRÍTICO en /collections-by-agent:', err);
             // Devolver un array vacío en caso de error 500 para evitar que el frontend falle
+            // y reportar el error en la consola
             res.status(500).json([]);
         }
     }
