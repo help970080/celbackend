@@ -94,26 +94,7 @@ const initReportRoutes = (models) => {
         const { period = 'month', start, end } = req.query;
 
         // --- 1. Definir Rango ---
-        let rangeStart, rangeEnd;
-        if (start && end) {
-          rangeStart = startOfDay(new Date(start));
-          rangeEnd   = endOfDay(new Date(end));
-        } else {
-          // Lógica de período por defecto
-          const today = startOfDay(new Date());
-          const s = new Date(today), e = new Date(today);
-          if (period === 'week') {
-            const day = today.getDay(); 
-            const diffToMon = (day + 6) % 7;
-            s.setDate(today.getDate() - diffToMon);
-            e.setDate(s.getDate() + 6);
-          } else if (period === 'month') {
-            s.setDate(1);
-            e.setMonth(s.getMonth() + 1); e.setDate(0);
-          }
-          rangeStart = startOfDay(s);
-          rangeEnd   = endOfDay(e);
-        }
+        const { rangeStart, rangeEnd } = getRangeDates(period, start, end);
 
         // --- 2. Ingreso Real ---
         const realRows = await Payment.findAll({
@@ -397,6 +378,8 @@ const initReportRoutes = (models) => {
                 ],
                 include: [{
                     model: Sale, as: 'sale', required: true,
+                    // CORRECCIÓN CLAVE: No seleccionar atributos de Sale para evitar 42803
+                    attributes: [], 
                     include: [{ 
                         model: User, as: 'assignedCollector', attributes: [], required: true, 
                         where: { role: 'collector_agent' } // Filtrar solo gestores
@@ -422,7 +405,6 @@ const initReportRoutes = (models) => {
         } catch (err) {
             console.error('Error CRÍTICO en /collections-by-agent:', err);
             // Devolver un array vacío en caso de error 500 para evitar que el frontend falle
-            // y reportar el error en la consola
             res.status(500).json([]);
         }
     }
