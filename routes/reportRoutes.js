@@ -55,7 +55,6 @@ const initReportRoutes = (models) => {
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
     async (req, res) => {
       try {
-        // USO CRÍTICO DE N() para asegurar que el resultado de .sum() sea un número
         const totalBalanceDue = N(await Sale.sum('balanceDue', { where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } }));
         const activeCreditSalesCount = await Sale.count({ where: { isCredit: true, balanceDue: { [Op.gt]: 0 } } }) || 0;
         const totalPaymentsReceived = N(await Payment.sum('amount'));
@@ -194,7 +193,7 @@ const initReportRoutes = (models) => {
         }
         // limpiar solapamientos
         for (const id of set.vencidos) { set.porVencer.delete(id); set.alCorriente.delete(id); }
-        for (const id of set.porVencer) set.alCorriente.delete(id);
+        for (const id of set.porVencidos) set.alCorriente.delete(id);
 
         res.json({
           alCorriente: set.alCorriente.size,
@@ -210,9 +209,35 @@ const initReportRoutes = (models) => {
     }
   );
   
-  // RUTA FALTANTE (se mantiene la estructura)
-  // Debes implementar las rutas de reporte faltantes aquí (ej. sales-by-date-range, collections-by-agent)
-  // Si las rutas no existen, el 404 es correcto.
+  // -------------------------------
+  // RUTA AÑADIDA: Créditos Pendientes (Solución al error del frontend)
+  // -------------------------------
+  router.get(
+    '/pending-credits',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+      try {
+        const pendingCredits = await Sale.findAll({
+          where: { isCredit: true, balanceDue: { [Op.gt]: 0 } },
+          include: [
+            { model: Client, as: 'client', attributes: ['name', 'lastName'] },
+            { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+            { model: Payment, as: 'payments', attributes: ['id'] } 
+          ],
+          order: [['saleDate', 'DESC']]
+        });
+
+        res.json(pendingCredits); 
+      } catch (err) {
+        console.error('Error al obtener créditos pendientes:', err);
+        // Devuelve una lista vacía para que el frontend no falle al intentar hacer .map
+        res.status(500).json({ message: 'Error al cargar créditos pendientes.' }); 
+      }
+    }
+  );
+  
+  // RUTA FALTANTE (Se necesita implementar todas las rutas que el frontend llama)
+  // Ejemplo: /sales-by-date-range, /collections-by-agent, /sales-accumulated
 
   // Se exportan las utilidades para ser usadas en remindersRoutes.js
   module.exports.startOfDay = startOfDay;
