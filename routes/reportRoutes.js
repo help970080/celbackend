@@ -38,6 +38,14 @@ const toSafeFixed = (value, decimals = 2) => {
   return Number(num.toFixed(decimals));
 };
 
+// Mapeo para agrupar en Sequelize
+const periodMap = {
+  day: 'day',
+  week: 'week',
+  month: 'month',
+  year: 'year',
+};
+
 // ====== INIT ======
 const initReportRoutes = (models) => {
   Sale     = models.Sale;
@@ -48,7 +56,7 @@ const initReportRoutes = (models) => {
   User     = models.User;
 
   // -------------------------
-  // 1. Resumen global simple
+  // 1. Resumen global simple (/summary) - YA FUNCIONA
   // -------------------------
   router.get(
     '/summary',
@@ -74,9 +82,9 @@ const initReportRoutes = (models) => {
       }
     }
   );
-
+  
   // ---------------------------------------------------
-  // 2. Ingresos proyectados vs reales 
+  // 2. Ingresos proyectados vs reales (/projected-vs-real-income) - YA FUNCIONA
   // ---------------------------------------------------
   router.get(
     '/projected-vs-real-income',
@@ -166,7 +174,7 @@ const initReportRoutes = (models) => {
   );
   
   // -------------------------------
-  // 3. Dashboard de status de clientes
+  // 3. Dashboard de status de clientes (/client-status-dashboard) - YA FUNCIONA
   // -------------------------------
   router.get(
     '/client-status-dashboard',
@@ -193,7 +201,7 @@ const initReportRoutes = (models) => {
         }
         // limpiar solapamientos
         for (const id of set.vencidos) { set.porVencer.delete(id); set.alCorriente.delete(id); }
-        for (const id of set.porVencidos) set.alCorriente.delete(id);
+        for (const id of set.porVencer) set.alCorriente.delete(id);
 
         res.json({
           alCorriente: set.alCorriente.size,
@@ -210,7 +218,7 @@ const initReportRoutes = (models) => {
   );
   
   // -------------------------------
-  // 4. RUTA AÑADIDA: Créditos Pendientes (Solución al error del frontend)
+  // 4. Créditos Pendientes (/pending-credits) - YA FUNCIONA
   // -------------------------------
   router.get(
     '/pending-credits',
@@ -230,73 +238,169 @@ const initReportRoutes = (models) => {
         res.json(pendingCredits); 
       } catch (err) {
         console.error('Error al obtener créditos pendientes:', err);
-        // Devuelve un error 500 para que el frontend pueda manejar el error de forma controlada
         res.status(500).json({ message: 'Error al cargar créditos pendientes.' }); 
       }
     }
   );
+  
+  // ==================================================================
+  // RUTAS FALTANTES: IMPLEMENTACIÓN COMPLETA
+  // ==================================================================
 
-
-  // ------------------------------------------------------------------
-  // 5. IMPLEMENTACIÓN PENDIENTE: Ventas por rango de fechas (sales-by-date-range)
-  // ------------------------------------------------------------------
-  // Implementación simulada (REEMPLAZAR CON LÓGICA DE SEQUELIZE REAL)
+  // 5. Ventas por rango de fechas (/sales-by-date-range)
   router.get(
     '/sales-by-date-range',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
     async (req, res) => {
         const { startDate, endDate } = req.query;
         try {
-            // Lógica de Sequelize para filtrar ventas por rango
             const sales = await Sale.findAll({
                 where: {
                     saleDate: {
                         [Op.between]: [startOfDay(new Date(startDate)), endOfDay(new Date(endDate))]
                     }
                 },
-                include: [{ model: Client, as: 'client', attributes: ['name', 'lastName'] }],
-                // ... incluir SaleItems si es necesario
+                include: [
+                    { model: Client, as: 'client', attributes: ['name', 'lastName'] },
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product', attributes: ['name'] }] }
+                ],
+                order: [['saleDate', 'DESC']]
             });
-            // NOTA: Esta es una implementación simplificada. Necesita incluir SaleItems y Products.
             res.json(sales);
         } catch (err) {
              console.error('Error en /sales-by-date-range:', err);
-             // Devuelve una lista vacía para no romper el frontend
-             res.status(500).json([]);
+             res.status(500).json([]); // Devuelve una lista vacía para no romper el frontend
         }
     }
   );
 
-  // ------------------------------------------------------------------
-  // 6. IMPLEMENTACIÓN PENDIENTE: Pagos por rango de fechas (payments-by-date-range)
-  // ------------------------------------------------------------------
-  // Implementación simulada (REEMPLAZAR CON LÓGICA DE SEQUELIZE REAL)
+  // 6. Pagos por rango de fechas (/payments-by-date-range)
   router.get(
     '/payments-by-date-range',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
     async (req, res) => {
         const { startDate, endDate } = req.query;
         try {
-            // Lógica de Sequelize para filtrar pagos por rango
             const payments = await Payment.findAll({
                 where: {
                     paymentDate: {
                          [Op.between]: [startOfDay(new Date(startDate)), endOfDay(new Date(endDate))]
                     }
                 },
-                include: [{ model: Sale, as: 'sale', include: [{ model: Client, as: 'client' }] }]
+                include: [{ model: Sale, as: 'sale', include: [{ model: Client, as: 'client' }] }],
+                order: [['paymentDate', 'DESC']]
             });
              res.json(payments);
         } catch (err) {
             console.error('Error en /payments-by-date-range:', err);
-             // Devuelve una lista vacía para no romper el frontend
+            res.status(500).json([]); // Devuelve una lista vacía para no romper el frontend
+        }
+    }
+  );
+
+  // 7. Ventas Acumuladas (/sales-accumulated)
+  router.get(
+    '/sales-accumulated',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+        const { period = 'day', startDate, endDate } = req.query;
+        const groupingPeriod = periodMap[period] || 'day';
+        const whereClause = {};
+
+        if (startDate && endDate) {
+            whereClause.saleDate = { [Op.between]: [startOfDay(new Date(startDate)), endOfDay(new Date(endDate))] };
+        }
+        
+        try {
+            const sales = await Sale.findAll({
+                where: whereClause,
+                attributes: [
+                    [Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('saleDate')), groupingPeriod],
+                    [Sequelize.fn('sum', Sequelize.col('totalAmount')), 'totalAmount'],
+                    [Sequelize.fn('count', Sequelize.col('id')), 'count']
+                ],
+                group: [Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('saleDate'))],
+                order: [[Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('saleDate')), 'ASC']]
+            });
+             res.json(sales);
+        } catch (err) {
+            console.error('Error en /sales-accumulated:', err);
             res.status(500).json([]);
         }
     }
   );
-  
-  // NOTA: Las rutas /sales-accumulated, /payments-accumulated, y /collections-by-agent
-  // AÚN DEBEN SER IMPLEMENTADAS con lógica de agrupación de Sequelize.
+
+  // 8. Pagos Acumulados (/payments-accumulated)
+  router.get(
+    '/payments-accumulated',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+        const { period = 'day', startDate, endDate } = req.query;
+        const groupingPeriod = periodMap[period] || 'day';
+        const whereClause = {};
+
+        if (startDate && endDate) {
+            whereClause.paymentDate = { [Op.between]: [startOfDay(new Date(startDate)), endOfDay(new Date(endDate))] };
+        }
+        
+        try {
+            const payments = await Payment.findAll({
+                where: whereClause,
+                attributes: [
+                    [Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), groupingPeriod],
+                    [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
+                    [Sequelize.fn('count', Sequelize.col('id')), 'count']
+                ],
+                group: [Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate'))],
+                order: [[Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), 'ASC']]
+            });
+             res.json(payments);
+        } catch (err) {
+            console.error('Error en /payments-accumulated:', err);
+            res.status(500).json([]);
+        }
+    }
+  );
+
+  // 9. Cobranza por Gestor (/collections-by-agent)
+  router.get(
+    '/collections-by-agent',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+        const { period = 'day', startDate, endDate } = req.query;
+        const groupingPeriod = periodMap[period] || 'day';
+        const whereClause = {};
+
+        if (startDate && endDate) {
+            whereClause.paymentDate = { [Op.between]: [startOfDay(new Date(startDate)), endOfDay(new Date(endDate))] };
+        }
+
+        try {
+            const collections = await Payment.findAll({
+                where: whereClause,
+                attributes: [
+                    [Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), groupingPeriod],
+                    [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
+                    [Sequelize.fn('count', Sequelize.col('Payment.id')), 'count'],
+                    [Sequelize.col('sale->assignedCollector.username'), 'collectorName']
+                ],
+                include: [{
+                    model: Sale, as: 'sale', required: true,
+                    include: [{ model: User, as: 'assignedCollector', attributes: [], required: true, where: { role: 'collector_agent' } }]
+                }],
+                group: [
+                    Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')),
+                    Sequelize.col('sale->assignedCollector.username')
+                ],
+                order: [[Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), 'ASC']]
+            });
+             res.json(collections);
+        } catch (err) {
+            console.error('Error en /collections-by-agent:', err);
+            res.status(500).json([]);
+        }
+    }
+  );
 
   // Se exportan las utilidades para ser usadas en remindersRoutes.js
   module.exports.startOfDay = startOfDay;
