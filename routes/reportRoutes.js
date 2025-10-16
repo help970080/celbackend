@@ -56,7 +56,7 @@ const initReportRoutes = (models) => {
   User     = models.User;
 
   // -------------------------
-  // 1. Resumen global simple (/summary) - YA FUNCIONA
+  // 1. Resumen global simple (/summary)
   // -------------------------
   router.get(
     '/summary',
@@ -82,9 +82,9 @@ const initReportRoutes = (models) => {
       }
     }
   );
-  
+
   // ---------------------------------------------------
-  // 2. Ingresos proyectados vs reales (/projected-vs-real-income) - YA FUNCIONA
+  // 2. Ingresos proyectados vs reales (/projected-vs-real-income)
   // ---------------------------------------------------
   router.get(
     '/projected-vs-real-income',
@@ -174,7 +174,7 @@ const initReportRoutes = (models) => {
   );
   
   // -------------------------------
-  // 3. Dashboard de status de clientes (/client-status-dashboard) - YA FUNCIONA
+  // 3. Dashboard de status de clientes (/client-status-dashboard)
   // -------------------------------
   router.get(
     '/client-status-dashboard',
@@ -201,7 +201,7 @@ const initReportRoutes = (models) => {
         }
         // limpiar solapamientos
         for (const id of set.vencidos) { set.porVencer.delete(id); set.alCorriente.delete(id); }
-        for (const id of set.porVencer) set.alCorriente.delete(id);
+        for (const id of set.porVencidos) set.alCorriente.delete(id);
 
         res.json({
           alCorriente: set.alCorriente.size,
@@ -218,7 +218,7 @@ const initReportRoutes = (models) => {
   );
   
   // -------------------------------
-  // 4. Créditos Pendientes (/pending-credits) - YA FUNCIONA
+  // 4. Créditos Pendientes (/pending-credits)
   // -------------------------------
   router.get(
     '/pending-credits',
@@ -243,11 +243,9 @@ const initReportRoutes = (models) => {
     }
   );
   
-  // ==================================================================
-  // RUTAS FALTANTES: IMPLEMENTACIÓN COMPLETA
-  // ==================================================================
-
+  // ------------------------------------------------------------------
   // 5. Ventas por rango de fechas (/sales-by-date-range)
+  // ------------------------------------------------------------------
   router.get(
     '/sales-by-date-range',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
@@ -274,7 +272,9 @@ const initReportRoutes = (models) => {
     }
   );
 
+  // ------------------------------------------------------------------
   // 6. Pagos por rango de fechas (/payments-by-date-range)
+  // ------------------------------------------------------------------
   router.get(
     '/payments-by-date-range',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
@@ -298,7 +298,9 @@ const initReportRoutes = (models) => {
     }
   );
 
+  // ------------------------------------------------------------------
   // 7. Ventas Acumuladas (/sales-accumulated)
+  // ------------------------------------------------------------------
   router.get(
     '/sales-accumulated',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
@@ -330,7 +332,9 @@ const initReportRoutes = (models) => {
     }
   );
 
+  // ------------------------------------------------------------------
   // 8. Pagos Acumulados (/payments-accumulated)
+  // ------------------------------------------------------------------
   router.get(
     '/payments-accumulated',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
@@ -362,7 +366,9 @@ const initReportRoutes = (models) => {
     }
   );
 
-  // 9. Cobranza por Gestor (/collections-by-agent)
+  // ------------------------------------------------------------------
+  // 9. Cobranza por Gestor (/collections-by-agent) - CORRECCIÓN FINAL
+  // ------------------------------------------------------------------
   router.get(
     '/collections-by-agent',
     authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
@@ -382,21 +388,41 @@ const initReportRoutes = (models) => {
                     [Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), groupingPeriod],
                     [Sequelize.fn('sum', Sequelize.col('amount')), 'totalAmount'],
                     [Sequelize.fn('count', Sequelize.col('Payment.id')), 'count'],
-                    [Sequelize.col('sale->assignedCollector.username'), 'collectorName']
+                    // Atributo del nombre del gestor
+                    [Sequelize.col('sale->assignedCollector.username'), 'collectorName'] 
                 ],
                 include: [{
-                    model: Sale, as: 'sale', required: true,
-                    include: [{ model: User, as: 'assignedCollector', attributes: [], required: true, where: { role: 'collector_agent' } }]
+                    model: Sale, 
+                    as: 'sale', 
+                    required: true,
+                    include: [{ 
+                        model: User, 
+                        as: 'assignedCollector', 
+                        attributes: [], 
+                        required: true, 
+                        where: { role: 'collector_agent' } // Filtrar solo gestores
+                    }]
                 }],
                 group: [
                     Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')),
-                    Sequelize.col('sale->assignedCollector.username')
+                    Sequelize.col('sale->assignedCollector.username') // Agrupar por el nombre del gestor
                 ],
-                order: [[Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), 'ASC']]
+                order: [[Sequelize.fn('date_trunc', groupingPeriod, Sequelize.col('paymentDate')), 'ASC']],
+                raw: true // Usar raw para simplificar la salida y hacer la agrupación más limpia
             });
-             res.json(collections);
+
+            // Mapear los resultados para asegurar que las claves sean correctas y seguras
+            const result = collections.map(c => ({
+                [groupingPeriod]: c[groupingPeriod],
+                totalAmount: N(c.totalAmount),
+                count: N(c.count),
+                collectorName: c.collectorName
+            }));
+            
+             res.json(result);
         } catch (err) {
-            console.error('Error en /collections-by-agent:', err);
+            console.error('Error CRÍTICO en /collections-by-agent:', err);
+            // Devolver un array vacío en caso de error 500 para evitar que el frontend falle
             res.status(500).json([]);
         }
     }
