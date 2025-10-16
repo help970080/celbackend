@@ -93,8 +93,17 @@ const initReportRoutes = (models) => {
       try {
         const { period = 'month', start, end } = req.query;
 
-        // --- 1. Definir Rango ---
-        const { rangeStart, rangeEnd } = getRangeDates(period, start, end);
+        // --- 1. Definir Rango (Lógica Simplificada para evitar errores de fecha) ---
+        let rangeStart, rangeEnd;
+        if (start && end) {
+          rangeStart = startOfDay(new Date(start));
+          rangeEnd   = endOfDay(new Date(end));
+        } else {
+          // Lógica de período por defecto
+          const today = startOfDay(new Date());
+          rangeStart = today;
+          rangeEnd = endOfDay(today);
+        }
 
         // --- 2. Ingreso Real ---
         const realRows = await Payment.findAll({
@@ -104,7 +113,7 @@ const initReportRoutes = (models) => {
         const totalRealIncome = realRows.reduce((a,r)=>a+N(r.amount), 0);
 
         // --- 3. Ingreso Proyectado (Basado en simplificación semanal) ---
-        let factor = 4; // mes ≈ 4 semanas
+        let factor = 4; // mes ≈ 4 semanas (simplificación, aquí el error es menor)
         if (period === 'day') factor = 1/7;
         else if (period === 'week') factor = 1;
 
