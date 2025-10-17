@@ -361,7 +361,7 @@ const initReportRoutes = (models) => {
   );
 
   // ------------------------------------------------------------------
-  // 9. Cobranza por Gestor (/collections-by-agent) - CORRECCIÓN FINAL
+  // 9. Cobranza por Gestor (/collections-by-agent)
   // ------------------------------------------------------------------
   router.get(
     '/collections-by-agent',
@@ -418,7 +418,99 @@ const initReportRoutes = (models) => {
         }
     }
   );
+  
+  // ------------------------------------------------------------------
+  // 10. Estado de Cuenta de Cliente (/client-statement/:clientId)
+  // SOLUCIÓN AL ERROR 404 DE /client-statement/14
+  // ------------------------------------------------------------------
+  router.get(
+    '/client-statement/:clientId',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+        try {
+            const clientId = req.params.clientId;
 
+            const client = await Client.findByPk(clientId, {
+                attributes: ['id', 'name', 'lastName']
+            });
+            
+            if (!client) {
+                return res.status(404).json({ message: 'Cliente no encontrado.' });
+            }
+
+            // Obtener todas las ventas y pagos asociados a este cliente para construir el estado
+            const sales = await Sale.findAll({
+                where: { clientId: clientId },
+                include: [
+                    { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
+                    { model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }
+                ],
+                order: [['saleDate', 'ASC']]
+            });
+            
+            // Devolver el cliente y sus ventas/pagos
+            res.json({ client, sales });
+        } catch (err) {
+            console.error('Error al obtener estado de cuenta de cliente:', err);
+            res.status(500).json({ message: 'Error al cargar el estado de cuenta.' });
+        }
+    }
+  );
+
+  // ------------------------------------------------------------------
+  // 11. Riesgo de Cliente (/client-risk/:clientId)
+  // SOLUCIÓN AL ERROR 404 DE /client-risk/5
+  // ------------------------------------------------------------------
+  router.get(
+    '/client-risk/:clientId',
+    authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
+    async (req, res) => {
+        try {
+            const clientId = req.params.clientId;
+            
+            // Lógica de Riesgo Simplificada: Basada en el balance pendiente
+            const totalBalance = N(await Sale.sum('balanceDue', { 
+                where: { clientId: clientId, isCredit: true } 
+            }));
+            
+            // Contar el número de ventas Vencidas (ejemplo: due < today)
+            const today = startOfDay(new Date());
+            const creditSales = await Sale.findAll({
+              where: { clientId: clientId, isCredit: true, balanceDue: { [Op.gt]: 0 } },
+              include: [{ model: Payment, as: 'payments' }],
+            });
+
+            let overdueSalesCount = 0;
+            for (const s of creditSales) {
+                const last = s.payments?.length
+                  ? s.payments.slice().sort((a,b)=>new Date(b.paymentDate)-new Date(a.paymentDate))[0].paymentDate
+                  : s.saleDate;
+                const due = getNextDueDate(last, s.paymentFrequency);
+                if (due < today) overdueSalesCount++;
+            }
+            
+            let riskLevel = 'Bajo';
+            // Reglas de ejemplo:
+            if (overdueSalesCount > 0 && totalBalance > 0) { 
+                riskLevel = 'Medio';
+            }
+            if (overdueSalesCount > 2 && totalBalance > 1000) { // Alto riesgo por alto balance y múltiples vencimientos
+                riskLevel = 'Alto';
+            }
+            
+            res.json({ 
+                clientId: clientId, 
+                totalBalanceDue: toSafeFixed(totalBalance), 
+                overdueSalesCount: overdueSalesCount,
+                riskLevel: riskLevel 
+            });
+        } catch (err) {
+            console.error('Error al calcular riesgo de cliente:', err);
+            res.status(500).json({ message: 'Error al calcular riesgo.' });
+        }
+    }
+  );
+  
   // Se exportan las utilidades para ser usadas en remindersRoutes.js
   module.exports.startOfDay = startOfDay;
   module.exports.endOfDay = endOfDay;
