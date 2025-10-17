@@ -5,6 +5,15 @@ const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
 const authorizeRoles = require('../middleware/roleMiddleware');
 
+// Importamos dayjs para manejar mejor el inicio y fin del mes
+const dayjs = require('dayjs');
+const timezone = require('dayjs/plugin/timezone');
+const utc = require('dayjs/plugin/utc');
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+const TIMEZONE = "America/Mexico_City";
+
 // Model refs (se setean en init)
 let Sale, Client, Product, Payment, SaleItem, User;
 
@@ -85,6 +94,7 @@ const initReportRoutes = (models) => {
 
   // ---------------------------------------------------
   // 2. Ingresos proyectados vs reales (/projected-vs-real-income)
+  // CORRECCIÓN: Ajustamos el rango por defecto para consultar el período completo.
   // ---------------------------------------------------
   router.get(
     '/projected-vs-real-income',
@@ -93,16 +103,31 @@ const initReportRoutes = (models) => {
       try {
         const { period = 'month', start, end } = req.query;
 
-        // --- 1. Definir Rango (Lógica Simplificada para evitar errores de fecha) ---
+        // --- 1. Definir Rango (Lógica Corregida) ---
         let rangeStart, rangeEnd;
         if (start && end) {
+          // Si el frontend envió fechas, las usamos
           rangeStart = startOfDay(new Date(start));
           rangeEnd   = endOfDay(new Date(end));
         } else {
-          // Lógica de período por defecto
-          const today = startOfDay(new Date());
-          rangeStart = today;
-          rangeEnd = endOfDay(today);
+          // Si el frontend no envió fechas (se selecciona solo el período, ej. "Mes")
+          const now = dayjs().tz(TIMEZONE);
+          switch (period) {
+            case 'day':
+                rangeStart = startOfDay(now.toDate());
+                rangeEnd = endOfDay(now.toDate());
+                break;
+            case 'week':
+                rangeStart = startOfDay(now.startOf('week').toDate());
+                rangeEnd = endOfDay(now.endOf('week').toDate());
+                break;
+            case 'month':
+            default:
+                // Por defecto, cubrimos todo el mes si las fechas están vacías.
+                rangeStart = startOfDay(now.startOf('month').toDate());
+                rangeEnd = endOfDay(now.endOf('month').toDate());
+                break;
+          }
         }
 
         // --- 2. Ingreso Real ---
@@ -113,7 +138,9 @@ const initReportRoutes = (models) => {
         const totalRealIncome = realRows.reduce((a,r)=>a+N(r.amount), 0);
 
         // --- 3. Ingreso Proyectado (Basado en simplificación semanal) ---
-        let factor = 4; // mes ≈ 4 semanas (simplificación, aquí el error es menor)
+        // La proyección se basa en los créditos activos y no cambia con el rango.
+        // Solo el "factor" de cálculo (ej: x4 para mes) cambia según el 'period'.
+        let factor = 4; // mes ≈ 4 semanas 
         if (period === 'day') factor = 1/7;
         else if (period === 'week') factor = 1;
 
