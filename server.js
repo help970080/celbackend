@@ -93,9 +93,13 @@ sequelize.authenticate()
     app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
 
     // ---------- NUEVA RUTA: Recordatorios ----------
-    // Requiere: ./routes/remindersRoutes.js exportando (models) => router
     const initRemindersRoutes = require('./routes/remindersRoutes');
     app.use('/api/reminders', authMiddleware, initRemindersRoutes(models));
+    
+    // ---------- NUEVA RUTA AÑADIDA: Gestión de Cobranza (CollectionLog) ----------
+    const initCollectionRoutes = require('./routes/collectionRoutes');
+    // Le pasamos 'sequelize' y 'models' para que pueda acceder y/o definir el modelo CollectionLog
+    app.use('/api/collections', authMiddleware, initCollectionRoutes(models, sequelize)); 
 
     console.log('✅ Todas las rutas principales han sido montadas.');
     app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
