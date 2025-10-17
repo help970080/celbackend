@@ -1,145 +1,127 @@
-// routes/remindersRoutes.js 
+// routes/remindersRoutes.js
 
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
+const authorizeRoles = require('../middleware/roleMiddleware');
 
-// --- Replicar/Definir utilidades de fecha de reportRoutes.js (o importarlas) ---
-// Se replican aquí para evitar problemas de ruteo/dependencias
-const startOfDay = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-const endOfDay   = (d) => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
-function addDays(date, days) { const x = new Date(date); x.setDate(x.getDate() + days); return x; }
-function getNextDueDate(lastPaymentDate, frequency) {
-  const base = startOfDay(lastPaymentDate || new Date());
-  switch ((frequency || 'weekly').toLowerCase()) {
-    case 'daily':       return endOfDay(addDays(base, 1));
-    case 'fortnightly': return endOfDay(addDays(base, 15));
-    case 'monthly':     { const x = new Date(base); x.setMonth(x.getMonth() + 1); return endOfDay(x); }
-    case 'weekly':
-    default:            return endOfDay(addDays(base, 7));
-  }
-}
-// Número seguro N
-const N = (v) => {
-  if (v === null || v === undefined || v === '') return 0;
-  const num = Number(v);
-  return Number.isFinite(num) ? num : 0;
-};
-// --- FIN Utilidades ---
+// Importar utilidades de fecha del módulo de reportes (asumiendo que está en el mismo nivel)
+// Si no puedes usar require directamente, ajusta la importación según tu estructura.
+const { startOfDay, getNextDueDate, N } = require('./reportRoutes'); 
 
-// Regla de severidad 
-function deriveSeverity({ daysLate, balanceDue, overdueCount }) {
-  if (daysLate >= 15 || balanceDue >= 2000 || overdueCount >= 2) return 'ALTO';
-  if (daysLate > 0 && daysLate <= 14 && balanceDue > 0) return 'BAJO';
-  return null;
-}
+// Referencias a Modelos
+let Sale, Client, User, Payment, CollectionLog; // Añadimos CollectionLog
 
-// Estimar cantidad de pagos vencidos en base a la frecuencia
-function estimateOverdueCount(sale, daysLate) {
-  if (!sale || !sale.isCredit) return 0;
-  
-  let daysPerPeriod = 7; // default: weekly
-  switch((sale.paymentFrequency || 'weekly').toLowerCase()) {
-    case 'daily': daysPerPeriod = 1; break;
-    case 'fortnightly': daysPerPeriod = 15; break;
-    case 'monthly': daysPerPeriod = 30; break; 
-    case 'weekly':
-    default: daysPerPeriod = 7; break;
-  }
-  
-  return daysLate > 0 ? Math.floor(daysLate / daysPerPeriod) : 0;
-}
-
-module.exports = (models) => {
-  const { Sale, Client, Payment } = models; 
-
-  router.get('/overdue', async (req, res) => {
-    try {
-      const sales = await Sale.findAll({
-        where: { isCredit: true, balanceDue: { [Op.gt]: 0 } }, 
+// Función principal de lógica para los recordatorios
+const fetchRemindersLogic = async () => {
+    // 1. Obtener todas las ventas a crédito activas
+    const sales = await Sale.findAll({
+        where: { isCredit: true, balanceDue: { [Op.gt]: 0 } },
         include: [
-          {
-            model: Client,
-            as: 'client',
-            required: true,
-            attributes: ['id', 'name', 'lastName', 'phone', 'address', 'city'],
-          },
-          {
-            model: Payment,
-            as: 'payments',
-            required: false,
-            attributes: ['id', 'amount', 'paymentDate', 'paymentMethod'],
-          },
-        ],
-        order: [['id', 'DESC']],
-      });
-
-      const today = startOfDay(new Date());
-      const out = [];
-
-      for (const sale of sales) {
-        const client = sale.client;
-        if (!client) continue;
-
-        const balanceDue = N(sale.balanceDue); // Usamos N() para seguridad
-        if (balanceDue <= 0) continue; 
-        
-        const payments = [...(sale.payments || [])].sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate));
-        const lastBaseDate = payments.length
-            ? new Date(payments[0].paymentDate)
-            : new Date(sale.saleDate); 
-        
-        let nextDue = getNextDueDate(lastBaseDate, sale.paymentFrequency);
-        
-        const isOverdue = nextDue.getTime() < today.getTime(); 
-        if (isOverdue) {
-            const daysLate = Math.floor((today.getTime() - nextDue.getTime()) / (24 * 60 * 60 * 1000));
-            const overdueCount = estimateOverdueCount(sale, daysLate);
-            const severity = deriveSeverity({ daysLate, balanceDue, overdueCount });
-            
-            if (severity) {
-                out.push({
-                    client: client.toJSON(),
-                    sale: {
-                        id: sale.id,
-                        balanceDue,
-                        weeklyPaymentAmount: N(sale.weeklyPaymentAmount), 
-                        totalAmount: N(sale.totalAmount),               
-                        nextDueDate: nextDue.toISOString(),
-                        paymentFrequency: sale.paymentFrequency,
-                    },
-                    daysLate,
-                    overdueCount,
-                    severity, 
-                });
+            { model: Client, as: 'client' },
+            { model: Payment, as: 'payments', attributes: ['paymentDate'] },
+            // CRÍTICO: Incluir el último CollectionLog
+            { 
+                model: CollectionLog, 
+                as: 'collectionLogs', // Usamos el alias definido en models/index.js
+                limit: 1, 
+                order: [['date', 'DESC']],
+                separate: true, // Fuerza una consulta separada para usar LIMIT/ORDER correctamente en el include
+                include: [{ model: User, as: 'collector', attributes: ['username'] }] // Quién lo gestionó
             }
-        } 
+        ],
+    });
+
+    const today = startOfDay(new Date());
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const remindersList = [];
+
+    for (const sale of sales) {
+        if (N(sale.balanceDue) <= 0) continue; 
         
-        const daysToDue = Math.ceil((nextDue.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
-        if (!isOverdue && daysToDue <= 7 && daysToDue >= 0) { 
-             out.push({
-                client: client.toJSON(),
-                sale: {
-                    id: sale.id,
-                    balanceDue,
-                    weeklyPaymentAmount: N(sale.weeklyPaymentAmount), 
-                    totalAmount: N(sale.totalAmount),               
-                    nextDueDate: nextDue.toISOString(),
-                    paymentFrequency: sale.paymentFrequency,
-                },
-                daysLate: 0, 
-                overdueCount: 0,
-                severity: 'POR_VENCER', 
-            });
+        // Determinar la última fecha de pago o de venta
+        const lastPaymentDate = sale.payments?.length
+            ? sale.payments.slice().sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate))[0].paymentDate
+            : sale.saleDate;
+
+        // Calcular la fecha del próximo vencimiento
+        const dueDate = getNextDueDate(lastPaymentDate, sale.paymentFrequency);
+        const diffDays = Math.ceil((dueDate.getTime() - today.getTime()) / msPerDay);
+        
+        let severity = 'POR_VENCER';
+        let daysLate = 0;
+
+        if (dueDate < today) {
+            daysLate = Math.abs(diffDays);
+            severity = daysLate >= 7 ? 'ALTO' : 'BAJO';
         }
-      }
+        
+        // Obtener el último log de gestión
+        const lastLog = sale.collectionLogs?.[0];
 
-      res.json(out);
-    } catch (err) {
-      console.error('GET /api/reminders/overdue error:', err);
-      res.status(500).json({ message: 'Error al calcular recordatorios de pago.' });
+        remindersList.push({
+            severity,
+            daysLate,
+            client: {
+                id: sale.client.id,
+                name: sale.client.name,
+                lastName: sale.client.lastName,
+                phone: sale.client.phone
+            },
+            sale: {
+                id: sale.id,
+                balanceDue: sale.balanceDue,
+                weeklyPaymentAmount: sale.weeklyPaymentAmount,
+                paymentFrequency: sale.paymentFrequency,
+            },
+            // CRÍTICO: Añadir los datos del último log
+            lastManagement: lastLog ? {
+                date: lastLog.date,
+                result: lastLog.result,
+                collector: lastLog.collector?.username || 'N/A'
+            } : null
+        });
     }
-  });
 
-  return router;
+    return remindersList.sort((a, b) => {
+        // Primero, ordenar por severidad (ALTO, BAJO, POR_VENCER)
+        const order = { 'ALTO': 1, 'BAJO': 2, 'POR_VENCER': 3 };
+        if (order[a.severity] !== order[b.severity]) {
+            return order[a.severity] - order[b.severity];
+        }
+        // Segundo, ordenar por días de atraso (más atraso primero)
+        return b.daysLate - a.daysLate;
+    });
 };
+
+// =========================================================
+// FUNCIÓN DE INICIALIZACIÓN DE RUTAS
+// =========================================================
+const initRemindersRoutes = (models) => {
+    Sale = models.Sale;
+    Client = models.Client;
+    User = models.User;
+    Payment = models.Payment;
+    CollectionLog = models.CollectionLog; // Aseguramos que el modelo esté disponible
+
+    // ---------------------------------------------------
+    // GET /api/reminders/overdue - Obtiene la lista de recordatorios y su último seguimiento
+    // ---------------------------------------------------
+    router.get(
+        '/overdue',
+        authorizeRoles(['super_admin', 'regular_admin', 'collector_agent']),
+        async (req, res) => {
+            try {
+                const reminders = await fetchRemindersLogic();
+                res.json(reminders);
+            } catch (err) {
+                console.error('Error al obtener recordatorios con gestión:', err);
+                res.status(500).json({ message: 'Error interno al cargar la lista de recordatorios.' });
+            }
+        }
+    );
+
+    return router;
+};
+
+module.exports = initRemindersRoutes;
