@@ -1,4 +1,4 @@
-// routes/collectionRoutes.js
+// routes/collectionRoutes.js (VERSIÓN CORREGIDA)
 
 const express = require('express');
 const router = express.Router();
@@ -22,7 +22,7 @@ const initCollectionRoutes = (models) => {
 
     // =========================================================
     // POST /api/collections/log - Registrar una gestión de cobranza
-    // CORRECCIÓN CRÍTICA: Obtenemos el ID del gestor del TOKEN (req.user.id)
+    // CORRECCIÓN CRÍTICA: Obtenemos el ID del gestor del TOKEN (req.user.userId)
     // =========================================================
     router.post(
         '/log',
@@ -32,13 +32,15 @@ const initCollectionRoutes = (models) => {
             // Ya NO requerimos collectorId en el body
             const { saleId, result, notes, nextActionDate } = req.body; 
             
-            // OBTENEMOS EL ID DEL GESTOR DESDE EL TOKEN
-            const collectorIdFromToken = req.user.id; 
+            // 🚨 CORRECCIÓN CLAVE: Usamos req.user.userId en lugar de req.user.id
+            const collectorIdFromToken = req.user.userId; 
 
             if (!saleId || !result || !notes) {
                 return res.status(400).json({ message: 'Campos saleId, result y notes son obligatorios.' });
             }
+            // Ahora esta validación debería pasar, ya que collectorIdFromToken ya no es 'undefined'
             if (!collectorIdFromToken || collectorIdFromToken <= 0) {
+                 // Este 401 era el error que veías al inicio
                  return res.status(401).json({ message: 'ID de gestor no encontrado en el token. Inicie sesión de nuevo.' });
             }
 
@@ -51,7 +53,7 @@ const initCollectionRoutes = (models) => {
                 // Crear el nuevo registro de gestión
                 const newLog = await CollectionLog.create({
                     saleId: saleId,
-                    collectorId: collectorIdFromToken, // USAMOS EL ID SEGURO DEL TOKEN
+                    collectorId: collectorIdFromToken, // USAMOS EL ID SEGURO Y CORRECTO
                     result: result,
                     notes: notes,
                     date: new Date(), 
@@ -72,7 +74,7 @@ const initCollectionRoutes = (models) => {
 
 
     // =========================================================
-    // GET /api/collections/export-log - Exportar registro a Excel (Sin cambios funcionales)
+    // GET /api/collections/export-log - Exportar registro a Excel
     // =========================================================
     router.get(
         '/export-log',
