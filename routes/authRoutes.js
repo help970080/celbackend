@@ -1,4 +1,4 @@
-// routes/authRoutes.js (Versión Final)
+// routes/authRoutes.js (Versión Final con Modificación)
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
@@ -38,7 +38,9 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
             const isMatch = await user.comparePassword(password);
             if (!isMatch) return res.status(401).json({ message: 'Credenciales inválidas.' });
             
-            const token = jwt.sign({ userId: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+            // 🚨 MODIFICACIÓN CLAVE: Cambiado de '1h' a '8h' para evitar expiración prematura.
+            const token = jwt.sign({ userId: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
+            
             res.json({ message: 'Login exitoso.', token, username: user.username, role: user.role });
         } catch (error) {
             res.status(500).json({ message: 'Error al iniciar sesión.' });
