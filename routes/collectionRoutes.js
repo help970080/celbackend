@@ -5,8 +5,9 @@ const router = express.Router();
 const authorize = require('../middleware/authMiddleware'); 
 const authorizeRoles = require('../middleware/roleMiddleware'); 
 const exceljs = require('exceljs'); 
+const { DataTypes } = require('sequelize'); 
 
-// Model references (Se pasarán a la función initCollectionRoutes)
+// Referencias a Modelos (Se asume que se pasan a la función initCollectionRoutes)
 let CollectionLog, Sale, User, Client; 
 
 // =========================================================
@@ -17,24 +18,31 @@ const initCollectionRoutes = (models) => {
     CollectionLog = models.CollectionLog;
     Sale = models.Sale;
     User = models.User;
-    Client = models.Client; // Necesario para obtener el nombre del cliente en el export
+    Client = models.Client;
 
     // =========================================================
     // POST /api/collections/log - Registrar una gestión de cobranza
+    // CORRECCIÓN CRÍTICA: Obtenemos el ID del gestor del TOKEN (req.user.id)
     // =========================================================
     router.post(
         '/log',
         authorize, 
         authorizeRoles(['super_admin', 'regular_admin', 'collector_agent']), 
         async (req, res) => {
-            const { saleId, collectorId, result, notes, nextActionDate } = req.body;
+            // Ya NO requerimos collectorId en el body
+            const { saleId, result, notes, nextActionDate } = req.body; 
+            
+            // OBTENEMOS EL ID DEL GESTOR DESDE EL TOKEN
+            const collectorIdFromToken = req.user.id; 
 
-            if (!saleId || !collectorId || !result || !notes) {
-                return res.status(400).json({ message: 'Campos saleId, collectorId, result y notes son obligatorios.' });
+            if (!saleId || !result || !notes) {
+                return res.status(400).json({ message: 'Campos saleId, result y notes son obligatorios.' });
+            }
+            if (!collectorIdFromToken || collectorIdFromToken <= 0) {
+                 return res.status(401).json({ message: 'ID de gestor no encontrado en el token. Inicie sesión de nuevo.' });
             }
 
             try {
-                // Verificar que la venta exista
                 const sale = await Sale.findByPk(saleId);
                 if (!sale) {
                     return res.status(404).json({ message: 'Venta no encontrada.' });
@@ -43,7 +51,7 @@ const initCollectionRoutes = (models) => {
                 // Crear el nuevo registro de gestión
                 const newLog = await CollectionLog.create({
                     saleId: saleId,
-                    collectorId: collectorId,
+                    collectorId: collectorIdFromToken, // USAMOS EL ID SEGURO DEL TOKEN
                     result: result,
                     notes: notes,
                     date: new Date(), 
@@ -64,7 +72,7 @@ const initCollectionRoutes = (models) => {
 
 
     // =========================================================
-    // GET /api/collections/export-log - Exportar registro a Excel
+    // GET /api/collections/export-log - Exportar registro a Excel (Sin cambios funcionales)
     // =========================================================
     router.get(
         '/export-log',
@@ -74,22 +82,20 @@ const initCollectionRoutes = (models) => {
             try {
                 const logs = await CollectionLog.findAll({
                     order: [['date', 'DESC']],
-                    // Usamos las asociaciones definidas en index.js
                     include: [
                         { 
                             model: Sale, 
-                            as: 'sale', // Usamos 'as'='sale' como se definió en index.js
+                            as: 'sale',
                             attributes: ['id', 'clientId', 'balanceDue'], 
-                            include: [{ model: Client, as: 'client', attributes: ['name', 'lastName'] }] // Incluimos Cliente a través de Venta
+                            include: [{ model: Client, as: 'client', attributes: ['name', 'lastName'] }]
                         },
-                        { model: User, as: 'collector', attributes: ['username'] } // Incluimos el Gestor
+                        { model: User, as: 'collector', attributes: ['username'] }
                     ]
                 });
                 
                 const workbook = new exceljs.Workbook();
                 const worksheet = workbook.addWorksheet('Registro de Gestión de Cobranza');
 
-                // Definir las columnas
                 worksheet.columns = [
                     { header: 'ID Log', key: 'id', width: 10 },
                     { header: 'Fecha Gestión', key: 'date', width: 20, style: { numFmt: 'dd/mm/yyyy hh:mm' } },
@@ -102,7 +108,6 @@ const initCollectionRoutes = (models) => {
                     { header: 'Próxima Acción', key: 'nextActionDate', width: 20, style: { numFmt: 'dd/mm/yyyy' } }
                 ];
 
-                // Llenar las filas
                 logs.forEach(log => {
                     const client = log.sale?.client;
                     worksheet.addRow({
@@ -118,7 +123,6 @@ const initCollectionRoutes = (models) => {
                     });
                 });
                 
-                // Devolver el archivo Excel
                 res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
                 res.setHeader('Content-Disposition', 'attachment; filename=' + `registro_gestiones_${new Date().toISOString().slice(0, 10)}.xlsx`);
                 
