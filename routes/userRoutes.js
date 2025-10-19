@@ -3,14 +3,15 @@ const router = express.Router();
 const authorizeRoles = require('../middleware/roleMiddleware');
 const bcrypt = require('bcryptjs');
 
-let User, AuditLog; // Se añade AuditLog
+let User, AuditLog;
 
 const initUserRoutes = (models) => {
     User = models.User;
-    AuditLog = models.AuditLog; // Se asigna el modelo AuditLog
+    AuditLog = models.AuditLog;
 
-    // RUTA GET /: Obtiene todos los usuarios
-    router.get('/', authorizeRoles(['super_admin']), async (req, res) => {
+    // 🔧 CORRECCIÓN: Permitimos que regular_admin y sales_admin también puedan ver usuarios
+    // Esto es necesario para que puedan ver la lista de gestores al crear ventas
+    router.get('/', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
         try {
             const users = await User.findAll({ attributes: { exclude: ['password'] } });
             res.json(users);
@@ -19,17 +20,15 @@ const initUserRoutes = (models) => {
         }
     });
 
-    // RUTA POST /: Crea un nuevo usuario
+    // RUTA POST /: Crea un nuevo usuario (SOLO super_admin puede crear usuarios)
     router.post('/', authorizeRoles(['super_admin']), async (req, res) => {
         const { username, password, role } = req.body;
         if (!username || !password || !role) {
             return res.status(400).json({ message: 'Todos los campos son obligatorios.' });
         }
         try {
-            // La encriptación se maneja con el hook 'beforeCreate' en el modelo User
             const newUser = await User.create({ username, password, role });
             
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -38,7 +37,6 @@ const initUserRoutes = (models) => {
                     details: `Nuevo usuario: '${newUser.username}' (ID: ${newUser.id}) con rol: '${newUser.role}'`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             const userResponse = { id: newUser.id, username: newUser.username, role: newUser.role };
             res.status(201).json(userResponse);
@@ -50,7 +48,7 @@ const initUserRoutes = (models) => {
         }
     });
 
-    // RUTA PUT /:id : Actualiza un usuario
+    // RUTA PUT /:id : Actualiza un usuario (SOLO super_admin)
     router.put('/:id', authorizeRoles(['super_admin']), async (req, res) => {
         const { username, password, role } = req.body;
         try {
@@ -59,7 +57,7 @@ const initUserRoutes = (models) => {
                 return res.status(404).json({ message: 'Usuario no encontrado.' });
             }
 
-            const oldRole = userToUpdate.role; // Guardar valores antiguos para el log
+            const oldRole = userToUpdate.role;
             const changes = [];
 
             userToUpdate.username = username || userToUpdate.username;
@@ -68,13 +66,12 @@ const initUserRoutes = (models) => {
                 changes.push(`Rol cambiado de '${oldRole}' a '${role}'`);
             }
             if (password) {
-                userToUpdate.password = password; // El hook del modelo se encargará de encriptarla
+                userToUpdate.password = password;
                 changes.push('Contraseña actualizada');
             }
 
             if (changes.length > 0) {
                 await userToUpdate.save();
-                // --- INICIO: REGISTRO DE AUDITORÍA ---
                 try {
                     await AuditLog.create({
                         userId: req.user.userId,
@@ -83,7 +80,6 @@ const initUserRoutes = (models) => {
                         details: `Usuario: '${userToUpdate.username}' (ID: ${userToUpdate.id}). Cambios: ${changes.join(', ')}.`
                     });
                 } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-                // --- FIN: REGISTRO DE AUDITORÍA ---
             }
 
             const userResponse = { id: userToUpdate.id, username: userToUpdate.username, role: userToUpdate.role };
@@ -94,7 +90,7 @@ const initUserRoutes = (models) => {
         }
     });
 
-    // RUTA DELETE /:id : Elimina un usuario
+    // RUTA DELETE /:id : Elimina un usuario (SOLO super_admin)
     router.delete('/:id', authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const userToDelete = await User.findByPk(req.params.id);
@@ -105,12 +101,11 @@ const initUserRoutes = (models) => {
                  return res.status(403).json({ message: 'No puedes eliminar tu propia cuenta.' });
             }
 
-            const deletedUsername = userToDelete.username; // Guardar datos para el log
+            const deletedUsername = userToDelete.username;
             const deletedUserId = userToDelete.id;
             
             await userToDelete.destroy();
 
-            // --- INICIO: REGISTRO DE AUDITORÍA ---
             try {
                 await AuditLog.create({
                     userId: req.user.userId,
@@ -119,7 +114,6 @@ const initUserRoutes = (models) => {
                     details: `Usuario: '${deletedUsername}' (ID: ${deletedUserId})`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
-            // --- FIN: REGISTRO DE AUDITORÍA ---
 
             res.status(204).send();
         } catch (error) {
