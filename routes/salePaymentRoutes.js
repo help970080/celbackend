@@ -21,6 +21,20 @@ const initSalePaymentRoutes = (models, sequelize) => {
     AuditLog = models.AuditLog;
 
     // ============================================
+    // MIDDLEWARE DE LOGGING PARA DEBUGGING
+    // ============================================
+    router.use((req, res, next) => {
+        console.log(`--> Petición Recibida: ${req.method} ${req.path}`);
+        if (req.method === 'DELETE') {
+            console.log('🔥🔥🔥 DELETE DETECTADO 🔥🔥🔥');
+            console.log('   Path completo:', req.originalUrl);
+            console.log('   Params:', req.params);
+            console.log('   User:', req.user);
+        }
+        next();
+    });
+
+    // ============================================
     // POST / - Crear nueva venta
     // ============================================
     router.post('/', authMiddleware, authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), async (req, res) => {
@@ -419,24 +433,42 @@ const initSalePaymentRoutes = (models, sequelize) => {
     // ============================================
     router.delete('/:saleId', authMiddleware, authorizeRoles(['super_admin']), async (req, res) => {
         const { saleId } = req.params;
-        const t = await sequelize.transaction();
         
+        console.log('🔥 DELETE recibido para venta ID:', saleId);
+        console.log('🔥 Usuario:', req.user);
+        console.log('🔥 Modelos disponibles:', {
+            Sale: !!Sale,
+            SaleItem: !!SaleItem,
+            Payment: !!Payment,
+            Product: !!Product,
+            Client: !!Client,
+            sequelize: !!sequelize
+        });
+        
+        if (!sequelize) {
+            console.error('❌ ERROR CRÍTICO: sequelize no está definido');
+            return res.status(500).json({ 
+                message: 'Error de configuración del servidor: sequelize no disponible' 
+            });
+        }
+        
+        let t;
         try {
-            console.log('🔥 DELETE recibido para venta ID:', saleId);
+            t = await sequelize.transaction();
+            console.log('✅ Transacción iniciada');
             
-            // 1. Buscar la venta con todos sus detalles
             const sale = await Sale.findByPk(saleId, {
                 include: [
                     { model: SaleItem, as: 'saleItems' },
                     { model: Client, as: 'client' },
                     { model: Payment, as: 'payments' }
                 ],
-                transaction: t,
-                lock: true
+                transaction: t
             });
 
             if (!sale) {
                 await t.rollback();
+                console.log('❌ Venta no encontrada');
                 return res.status(404).json({ message: 'Venta no encontrada.' });
             }
 
@@ -444,74 +476,98 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 id: sale.id,
                 clientId: sale.clientId,
                 totalAmount: sale.totalAmount,
-                itemsCount: sale.saleItems?.length || 0
+                itemsCount: sale.saleItems?.length || 0,
+                paymentsCount: sale.payments?.length || 0
             });
 
-            // 2. Restaurar el stock de los productos vendidos
             if (sale.saleItems && sale.saleItems.length > 0) {
+                console.log('📦 Restaurando stock de', sale.saleItems.length, 'productos...');
+                
                 for (const item of sale.saleItems) {
-                    const product = await Product.findByPk(item.productId, { 
-                        transaction: t, 
-                        lock: true 
-                    });
-                    
-                    if (product) {
-                        const oldStock = product.stock;
-                        product.stock = product.stock + item.quantity;
-                        await product.save({ transaction: t });
+                    try {
+                        const product = await Product.findByPk(item.productId, { transaction: t });
                         
-                        console.log(`📦 Stock restaurado: ${product.name} - ${oldStock} → ${product.stock}`);
+                        if (product) {
+                            const oldStock = product.stock;
+                            product.stock = product.stock + item.quantity;
+                            await product.save({ transaction: t });
+                            console.log(`  ✓ ${product.name}: ${oldStock} → ${product.stock}`);
+                        } else {
+                            console.warn(`  ⚠️ Producto ${item.productId} no encontrado`);
+                        }
+                    } catch (productError) {
+                        console.error(`  ❌ Error restaurando producto ${item.productId}:`, productError.message);
                     }
                 }
             }
 
-            // 3. Eliminar todos los pagos asociados
             if (sale.payments && sale.payments.length > 0) {
-                await Payment.destroy({ 
+                const deletedPayments = await Payment.destroy({ 
                     where: { saleId: sale.id }, 
                     transaction: t 
                 });
-                console.log(`💰 ${sale.payments.length} pago(s) eliminado(s)`);
+                console.log(`💰 ${deletedPayments} pago(s) eliminado(s)`);
             }
 
-            // 4. Eliminar todos los items de venta
-            await SaleItem.destroy({ 
+            const deletedItems = await SaleItem.destroy({ 
                 where: { saleId: sale.id }, 
                 transaction: t 
             });
-            console.log('📋 Items de venta eliminados');
+            console.log(`📋 ${deletedItems} item(s) de venta eliminado(s)`);
 
-            // 5. Eliminar la venta
             await sale.destroy({ transaction: t });
             console.log('🗑️ Venta eliminada');
 
-            // 6. Registrar en auditoría
-            try {
-                await AuditLog.create({
-                    userId: req.user.userId,
-                    username: req.user.username,
-                    action: 'ELIMINÓ VENTA',
-                    details: `Venta ID: ${sale.id}, Cliente: ${sale.client?.name || 'N/A'} ${sale.client?.lastName || ''}, Monto: $${sale.totalAmount.toFixed(2)}, Items restaurados: ${sale.saleItems?.length || 0}`
-                });
-            } catch (auditError) {
-                console.error('⚠️ Error al registrar en auditoría:', auditError);
+            if (AuditLog) {
+                try {
+                    await AuditLog.create({
+                        userId: req.user.userId,
+                        username: req.user.username,
+                        action: 'ELIMINÓ VENTA',
+                        details: `Venta ID: ${sale.id}, Cliente: ${sale.client?.name || 'N/A'} ${sale.client?.lastName || ''}, Monto: $${sale.totalAmount.toFixed(2)}`
+                    }, { transaction: t });
+                    console.log('📝 Auditoría registrada');
+                } catch (auditError) {
+                    console.warn('⚠️ No se pudo registrar auditoría:', auditError.message);
+                }
             }
 
-            // 7. Commit de la transacción
             await t.commit();
-            console.log('✅ Transacción completada exitosamente');
+            console.log('✅ TRANSACCIÓN COMPLETADA EXITOSAMENTE');
 
-            // 8. Responder con éxito (204 = No Content)
             res.status(204).send();
             
         } catch (error) {
-            await t.rollback();
-            console.error('❌ Error al eliminar venta:', error);
-            console.error('Stack:', error.stack);
+            console.error('❌ ERROR AL ELIMINAR VENTA:', error);
+            console.error('❌ Error name:', error.name);
+            console.error('❌ Error message:', error.message);
+            console.error('❌ Stack:', error.stack);
+            
+            if (t) {
+                try {
+                    await t.rollback();
+                    console.log('🔄 Transacción revertida');
+                } catch (rollbackError) {
+                    console.error('❌ Error al hacer rollback:', rollbackError);
+                }
+            }
+            
             res.status(500).json({ 
                 message: 'Error al eliminar la venta', 
-                error: error.message 
+                error: error.message,
+                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
             });
+        }
+    });
+
+    // ============================================
+    // VERIFICACIÓN DE RUTAS REGISTRADAS
+    // ============================================
+    console.log('📋 Rutas registradas en salePaymentRoutes:');
+    router.stack.forEach((r) => {
+        if (r.route) {
+            const methods = Object.keys(r.route.methods).join(', ').toUpperCase();
+            console.log(`   ${methods} /api/sales${r.route.path}`);
         }
     });
 
