@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
-    const JWT_SECRET = process.env.JWT_SECRET; // Asegúrate de que JWT_SECRET está configurado en tu .env
+    const JWT_SECRET = process.env.JWT_SECRET;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ message: 'Acceso denegado. No se proporcionó token de autenticación.' });
@@ -17,13 +17,15 @@ const authMiddleware = (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        // Asegúrate de que el token contiene 'userId', 'username' y ahora 'role'
-        // y adjúntalos a req.user
+        
+        // Adjuntamos userId, username, role Y tiendaId al request
         req.user = { 
             userId: decoded.userId,
             username: decoded.username,
-            role: decoded.role // <-- ¡Añadir el rol decodificado!
+            role: decoded.role,
+            tiendaId: decoded.tiendaId // NUEVO: ID de la tienda del usuario
         };
+        
         next();
     } catch (error) {
         console.error('Error de verificación de token:', error);

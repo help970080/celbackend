@@ -6,8 +6,8 @@ module.exports = (sequelize) => {
         id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
         name: { type: DataTypes.STRING, allowNull: false },
         lastName: { type: DataTypes.STRING, allowNull: false },
-        phone: { type: DataTypes.STRING, allowNull: false, unique: true },
-        email: { type: DataTypes.STRING, unique: true, allowNull: true, validate: { isEmail: true } },
+        phone: { type: DataTypes.STRING, allowNull: false }, // unique manejado por tienda
+        email: { type: DataTypes.STRING, allowNull: true, validate: { isEmail: true } },
         password: {
             type: DataTypes.STRING,
             allowNull: true
@@ -18,8 +18,14 @@ module.exports = (sequelize) => {
         zipCode: { type: DataTypes.STRING },
         identificationId: { type: DataTypes.STRING },
         notes: { type: DataTypes.TEXT },
+        tiendaId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            field: 'tienda_id',
+            defaultValue: 1
+        }
     }, {
-        tableName: 'Clientes',
+        tableName: 'clients', // ⭐ Corregido para tu SQLite
         timestamps: true,
         hooks: {
             beforeCreate: async (client) => {
@@ -43,4 +49,3 @@ module.exports = (sequelize) => {
 
     return Client;
 };
-// LA LLAVE '}' EXTRA QUE ESTABA AQUÍ HA SIDO ELIMINADA.

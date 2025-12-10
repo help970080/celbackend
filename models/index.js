@@ -1,14 +1,11 @@
-// models/index.js (CORREGIDO)
-
 const UserModel = require('./User');
 const ClientModel = require('./Client');
 const ProductModel = require('./Product');
 const SaleModel = require('./Sale');
 const PaymentModel = require('./Payment');
 const SaleItemModel = require('./SaleItem');
-const AuditLogModel = require('./AuditLog'); 
-// --- NUEVA IMPORTACIÓN ---
-const CollectionLogModel = require('./CollectionLog'); 
+const AuditLogModel = require('./AuditLog');
+const StoreModel = require('./Store');
 
 module.exports = (sequelize) => {
     const User = UserModel(sequelize);
@@ -17,11 +14,29 @@ module.exports = (sequelize) => {
     const Sale = SaleModel(sequelize);
     const Payment = PaymentModel(sequelize);
     const SaleItem = SaleItemModel(sequelize);
-    const AuditLog = AuditLogModel(sequelize); 
-    // --- NUEVA INICIALIZACIÓN ---
-    const CollectionLog = CollectionLogModel(sequelize);
+    const AuditLog = AuditLogModel(sequelize);
+    const Store = StoreModel(sequelize);
 
-    // --- ASOCIACIONES DEFINITIVAS ---
+    // --- ASOCIACIONES CON STORE ---
+    Store.hasMany(User, { foreignKey: 'tiendaId', as: 'users' });
+    User.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+
+    Store.hasMany(Client, { foreignKey: 'tiendaId', as: 'clients' });
+    Client.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+
+    Store.hasMany(Product, { foreignKey: 'tiendaId', as: 'products' });
+    Product.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+
+    Store.hasMany(Sale, { foreignKey: 'tiendaId', as: 'sales' });
+    Sale.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+
+    Store.hasMany(Payment, { foreignKey: 'tiendaId', as: 'payments' });
+    Payment.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+
+    Store.hasMany(AuditLog, { foreignKey: 'tiendaId', as: 'auditLogs' });
+    AuditLog.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+
+    // --- ASOCIACIONES EXISTENTES ---
     Sale.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
     Client.hasMany(Sale, { foreignKey: 'clientId', as: 'sales' });
 
@@ -37,15 +52,7 @@ module.exports = (sequelize) => {
     Sale.hasMany(Payment, { foreignKey: 'saleId', as: 'payments', onDelete: 'CASCADE' });
     Payment.belongsTo(Sale, { foreignKey: 'saleId', as: 'sale' });
 
-    // --- ASOCIACIONES DE COBRANZA (CRÍTICAS PARA EL REPORTE) ---
-    Sale.hasMany(CollectionLog, { foreignKey: 'saleId', as: 'collectionLogs', onDelete: 'CASCADE' });
-    CollectionLog.belongsTo(Sale, { foreignKey: 'saleId', as: 'sale' });
-    
-    CollectionLog.belongsTo(User, { foreignKey: 'collectorId', as: 'collector' });
-    User.hasMany(CollectionLog, { foreignKey: 'collectorId', as: 'logsMade' });
-
-    // --- NUEVA ASOCIACIÓN PARA AUDITORÍA ---
     AuditLog.belongsTo(User, { foreignKey: 'userId', onDelete: 'SET NULL' });
 
-    return { User, Client, Product, Sale, Payment, SaleItem, AuditLog, CollectionLog }; 
+    return { User, Client, Product, Sale, Payment, SaleItem, AuditLog, Store };
 };

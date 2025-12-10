@@ -10,8 +10,7 @@ module.exports = (sequelize) => {
         },
         name: {
             type: DataTypes.STRING,
-            allowNull: false,
-            unique: true
+            allowNull: false
         },
         description: {
             type: DataTypes.TEXT,
@@ -26,7 +25,7 @@ module.exports = (sequelize) => {
             allowNull: false,
             defaultValue: 0
         },
-        imageUrls: { // Es un arreglo de URLs (JSON)
+        imageUrls: {
             type: DataTypes.JSON,
             allowNull: true,
             defaultValue: []
@@ -38,6 +37,12 @@ module.exports = (sequelize) => {
         brand: {
             type: DataTypes.STRING,
             allowNull: true
+        },
+        tiendaId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            field: 'tienda_id',
+            defaultValue: 1
         }
     }, {
         tableName: 'products',

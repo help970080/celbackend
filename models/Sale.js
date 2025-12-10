@@ -6,10 +6,7 @@ module.exports = (sequelize) => {
         clientId: {
             type: DataTypes.INTEGER,
             allowNull: false,
-            references: {
-                model: 'Clientes', 
-                key: 'id'
-            }
+            field: 'clientId'
         },
         saleDate: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
         totalAmount: { type: DataTypes.FLOAT, allowNull: false },
@@ -21,20 +18,16 @@ module.exports = (sequelize) => {
         weeklyPaymentAmount: { type: DataTypes.FLOAT, allowNull: true },
         balanceDue: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
         status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'completed' },
-        
-        // --- INICIO DE LA CORRECCIÓN ---
-        // Se restaura la restricción de clave foránea para garantizar integridad de datos.
         assignedCollectorId: {
             type: DataTypes.INTEGER,
-            allowNull: true,
-            references: {
-                model: 'Usuarios',
-                key: 'id'
-            },
-            onUpdate: 'CASCADE',
-            onDelete: 'SET NULL'
+            allowNull: true
         },
-        // --- FIN DE LA CORRECCIÓN ---
+        tiendaId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            field: 'tienda_id',
+            defaultValue: 1
+        }
     }, {
         tableName: 'sales',
         timestamps: true

@@ -92,6 +92,12 @@ sequelize.authenticate()
     const initDashboardRoutes = require('./routes/dashboardRoutes');
     app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
 
+// ⭐ AGREGAR ESTAS 2 LÍNEAS AQUÍ:
+        const initStoreRoutes = require('./routes/storeRoutes');
+        app.use('/api/stores', authMiddleware, initStoreRoutes(models));
+        
+        console.log('✅ Todas las rutas principales han sido montadas.');
+
     // ---------- NUEVA RUTA: Recordatorios ----------
     const initRemindersRoutes = require('./routes/remindersRoutes');
     app.use('/api/reminders', authMiddleware, initRemindersRoutes(models));

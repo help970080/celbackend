@@ -24,6 +24,12 @@ module.exports = (sequelize) => {
         notes: {
             type: DataTypes.TEXT,
             allowNull: true
+        },
+        tiendaId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            field: 'tienda_id',
+            defaultValue: 1
         }
     }, {
         tableName: 'payments',

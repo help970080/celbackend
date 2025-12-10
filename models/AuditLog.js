@@ -5,12 +5,18 @@ module.exports = (sequelize) => {
         id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
         userId: { type: DataTypes.INTEGER, allowNull: true },
         username: { type: DataTypes.STRING, allowNull: true },
-        action: { type: DataTypes.STRING, allowNull: false }, // Ej: "CREÓ CLIENTE", "REGISTRÓ PAGO"
-        details: { type: DataTypes.TEXT, allowNull: true }, // Ej: "Cliente ID: 15", "Monto: $500 en Venta #3"
+        action: { type: DataTypes.STRING, allowNull: false },
+        details: { type: DataTypes.TEXT, allowNull: true },
+        tiendaId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            field: 'tienda_id',
+            defaultValue: 1
+        }
     }, {
         tableName: 'audit_logs',
         timestamps: true,
-        updatedAt: false // No necesitamos 'updatedAt' para un log
+        updatedAt: false
     });
     return AuditLog;
 };
