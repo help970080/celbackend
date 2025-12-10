@@ -1,4 +1,4 @@
-// routes/authRoutes.js (Versión Multi-Tenant - Compatible con frontend existente)
+// routes/authRoutes.js - VERSION DEBUG
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
@@ -52,7 +52,7 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 include: [{ 
                     model: Store, 
                     as: 'store',
-                    attributes: ['id', 'name', 'is_active'] // ✅ CORREGIDO
+                    required: false
                 }]
             });
             
@@ -60,8 +60,27 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 return res.status(401).json({ message: 'Credenciales inválidas.' });
             }
             
+            // ⭐ DEBUG
+            console.log('=== DEBUG LOGIN ===');
+            console.log('user.store:', user.store);
+            console.log('user.tiendaId:', user.tiendaId);
+            console.log('user.tienda_id:', user.tienda_id);
+            console.log('user dataValues:', user.dataValues);
+            
             // Verificar que la tienda esté activa
-            if (!user.store || !user.store.is_active) { // ✅ CORREGIDO
+            if (!user.store) {
+                return res.status(403).json({ 
+                    message: 'La tienda asociada no está activa.',
+                    debug: {
+                        hasStore: !!user.store,
+                        userTiendaId: user.tiendaId,
+                        userTienda_id: user.tienda_id,
+                        dataValues: user.dataValues
+                    }
+                });
+            }
+            
+            if (!user.store.isActive && !user.store.is_active) {
                 return res.status(403).json({ message: 'La tienda asociada no está activa.' });
             }
             
@@ -75,7 +94,7 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                     userId: user.id, 
                     username: user.username, 
                     role: user.role,
-                    tiendaId: user.tiendaId
+                    tiendaId: user.tiendaId || user.tienda_id
                 }, 
                 JWT_SECRET, 
                 { expiresIn: '1h' }
@@ -86,12 +105,16 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 token, 
                 username: user.username, 
                 role: user.role,
-                tiendaId: user.tiendaId,
-                storeName: user.store.name
+                tiendaId: user.tiendaId || user.tienda_id,
+                storeName: user.store ? user.store.name : 'Sin tienda'
             });
         } catch (error) {
             console.error('Error al iniciar sesión:', error);
-            res.status(500).json({ message: 'Error al iniciar sesión.' });
+            res.status(500).json({ 
+                message: 'Error al iniciar sesión.',
+                error: error.message,
+                stack: error.stack
+            });
         }
     });
 
