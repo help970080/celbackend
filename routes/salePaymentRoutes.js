@@ -106,9 +106,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'CREÓ VENTA',
-                    details: `Venta ID: ${newSale.id,
+                    details: `Venta ID: ${newSale.id} para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}. ${newSale.isCredit ? `Enganche: $${newSale.downPayment.toFixed(2)}` : 'Contado'}`,
                     tiendaId: req.user.tiendaId // ⭐ NUEVO
-                } para Cliente: ${client.name} ${client.lastName} por $${totalAmount.toFixed(2)}. ${newSale.isCredit ? `Enganche: $${newSale.downPayment.toFixed(2)}` : 'Contado'}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
@@ -334,9 +333,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'ASIGNÓ GESTOR',
-                    details: `Venta ID: ${saleId,
+                    details: `Venta ID: ${saleId}. Cambio de: ${previousCollector} a: ${newCollector}`,
                     tiendaId: req.user.tiendaId // ⭐ NUEVO
-                }. Cambio de: ${previousCollector} a: ${newCollector}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
@@ -369,9 +367,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'REGISTRÓ PAGO',
-                    details: `Monto: $${parseFloat(amount).toFixed(2),
+                    details: `Monto: $${parseFloat(amount).toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`,
                     tiendaId: req.user.tiendaId // ⭐ NUEVO
-                } en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
             res.status(201).json(newPayment);
@@ -414,9 +411,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'CANCELÓ PAGO',
-                    details: `Pago ID: ${paymentId,
+                    details: `Pago ID: ${paymentId} cancelado. Monto revertido: $${reversedAmount.toFixed(2)}. Saldo de Venta ${sale.id} cambió de $${oldBalanceDue.toFixed(2)} a $${sale.balanceDue.toFixed(2)}. Estado de Venta: ${oldStatus} -> ${sale.status}.`,
                     tiendaId: req.user.tiendaId // ⭐ NUEVO
-                } cancelado. Monto revertido: $${reversedAmount.toFixed(2)}. Saldo de Venta ${sale.id} cambió de $${oldBalanceDue.toFixed(2)} a $${sale.balanceDue.toFixed(2)}. Estado de Venta: ${oldStatus} -> ${sale.status}.`
                 });
             } catch (auditError) {
                 console.error("Error al registrar la cancelación de pago en auditoría:", auditError);
@@ -468,9 +464,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     userId: req.user.userId,
                     username: req.user.username,
                     action: 'ELIMINÓ VENTA',
-                    details: `Venta ID: ${saleIdForLog,
+                    details: `Venta ID: ${saleIdForLog} eliminada. El stock de los productos ha sido restaurado.`,
                     tiendaId: req.user.tiendaId // ⭐ NUEVO
-                } eliminada. El stock de los productos ha sido restaurado.`
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
