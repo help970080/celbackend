@@ -111,8 +111,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 });
             } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
-            const result = await Sale.findByPk(newSale.id, { include: [{ all: true, nested: true }] });
-            res.status(201).json(result);
+            // Devolver la venta creada directamente
+            res.status(201).json(newSale);
         } catch (error) {
             await t.rollback();
             res.status(400).json({ message: error.message || 'Error interno del servidor.' });
