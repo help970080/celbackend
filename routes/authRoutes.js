@@ -21,8 +21,6 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
         }
         
         const { username, password } = req.body;
-        
-        // ⭐ CAMBIO: Si no se envía tiendaId, usar tienda 1 por defecto (compatibilidad con frontend)
         const tiendaId = req.body.tiendaId || 1;
         
         try {
@@ -54,7 +52,7 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 include: [{ 
                     model: Store, 
                     as: 'store',
-                    attributes: ['id', 'name', 'isActive']
+                    attributes: ['id', 'name', 'is_active'] // ✅ CORREGIDO
                 }]
             });
             
@@ -63,7 +61,7 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
             }
             
             // Verificar que la tienda esté activa
-            if (!user.store || !user.store.isActive) {
+            if (!user.store || !user.store.is_active) { // ✅ CORREGIDO
                 return res.status(403).json({ message: 'La tienda asociada no está activa.' });
             }
             
@@ -72,7 +70,6 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 return res.status(401).json({ message: 'Credenciales inválidas.' });
             }
             
-            // ⭐ NUEVO: Incluir tiendaId en el token JWT
             const token = jwt.sign(
                 { 
                     userId: user.id, 
