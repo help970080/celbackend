@@ -37,7 +37,7 @@ const initReportRoutes = (models) => {
     router.get('/client-status-dashboard', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), applyStoreFilter, async (req, res) => {
         try {
             const allCreditSales = await Sale.findAll({
-                where: { ...req.storeFilter, // ⭐ NUEVO isCredit: true },
+                where: { ...req.storeFilter, isCredit: true }, // ⭐ CORREGIDO
                 include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }]
             });
 
@@ -84,7 +84,7 @@ const initReportRoutes = (models) => {
         }
         try {
             const allCreditSales = await Sale.findAll({
-                where: { ...req.storeFilter, // ⭐ NUEVO clientId, isCredit: true },
+                where: { ...req.storeFilter, clientId, isCredit: true  },
                 include: [{ model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }]
             });
 
@@ -119,8 +119,8 @@ const initReportRoutes = (models) => {
 
     router.get('/summary', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), applyStoreFilter, async (req, res) => {
         try {
-            const totalBalanceDue = await Sale.sum('balanceDue', { where: { ...req.storeFilter, // ⭐ NUEVO isCredit: true, balanceDue: { [Op.gt]: 0 } } });
-            const activeCreditSalesCount = await Sale.count({ where: { ...req.storeFilter, // ⭐ NUEVO isCredit: true, balanceDue: { [Op.gt]: 0 } } });
+            const totalBalanceDue = await Sale.sum('balanceDue', { where: { ...req.storeFilter, isCredit: true, balanceDue: { [Op.gt]: 0  } } });
+            const activeCreditSalesCount = await Sale.count({ where: { ...req.storeFilter, isCredit: true, balanceDue: { [Op.gt]: 0  } } });
             const totalPaymentsReceived = await Payment.sum('amount');
             const totalClientsCount = await Client.count();
             const totalSalesCount = await Sale.count();
@@ -146,7 +146,7 @@ const initReportRoutes = (models) => {
             const client = await Client.findByPk(clientId);
             if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
             const sales = await Sale.findAll({
-                where: { ...req.storeFilter, // ⭐ NUEVO clientId },
+                where: { ...req.storeFilter, clientId  },
                 include: [
                     { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
                     { model: Payment, as: 'payments', order: [['paymentDate', 'ASC']] }
@@ -164,9 +164,8 @@ const initReportRoutes = (models) => {
     router.get('/pending-credits', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), applyStoreFilter, async (req, res) => {
         try {
             const pendingCredits = await Sale.findAll({
-                where: { ...req.storeFilter, // ⭐ NUEVO
-                    isCredit: true,
-                    balanceDue: { [Op.gt]: 0 }
+                where: { ...req.storeFilter, isCredit: true,
+                    balanceDue: { [Op.gt]: 0  }
                 },
                 include: [
                     { model: Client, as: 'client', attributes: ['name', 'lastName'] },
@@ -186,10 +185,9 @@ const initReportRoutes = (models) => {
         try {
             const { startDate, endDate } = req.query;
             const sales = await Sale.findAll({
-                where: { ...req.storeFilter, // ⭐ NUEVO
-                    saleDate: {
+                where: { ...req.storeFilter, saleDate: {
                         [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
-                    }
+                     }
                 },
                 include: [
                     { model: Client, as: 'client' },
@@ -207,10 +205,9 @@ const initReportRoutes = (models) => {
         try {
             const { startDate, endDate } = req.query;
             const payments = await Payment.findAll({
-                where: { ...req.storeFilter, // ⭐ NUEVO
-                    paymentDate: {
+                where: { ...req.storeFilter, paymentDate: {
                         [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()]
-                    }
+                     }
                 },
                 include: [{
                     model: Sale, as: 'sale',
@@ -227,7 +224,7 @@ const initReportRoutes = (models) => {
     router.get('/sales-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), applyStoreFilter, async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
-            const whereClause = { ...req.storeFilter, // ⭐ NUEVO};
+            const whereClause = { ...req.storeFilter };
             if (startDate && endDate) {
                 whereClause.saleDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
             }
@@ -251,7 +248,7 @@ const initReportRoutes = (models) => {
     router.get('/payments-accumulated', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), applyStoreFilter, async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
-            const whereClause = { ...req.storeFilter, // ⭐ NUEVO};
+            const whereClause = { ...req.storeFilter };
             if (startDate && endDate) {
                 whereClause.paymentDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
             }
@@ -275,7 +272,7 @@ const initReportRoutes = (models) => {
     router.get('/collections-by-agent', authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), applyStoreFilter, async (req, res) => {
         try {
             const { period = 'day', startDate, endDate } = req.query;
-            const whereClause = { ...req.storeFilter, // ⭐ NUEVO};
+            const whereClause = { ...req.storeFilter };
             if (startDate && endDate) {
                 whereClause.paymentDate = { [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()] };
             }
@@ -294,7 +291,7 @@ const initReportRoutes = (models) => {
                     include: [{
                         model: User,
                         as: 'assignedCollector',
-                        where: { ...req.storeFilter, // ⭐ NUEVO role: 'collector_agent' },
+                        where: { ...req.storeFilter, role: 'collector_agent'  },
                         attributes: []
                     }]
                 }],
