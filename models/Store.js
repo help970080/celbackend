@@ -29,11 +29,14 @@ module.exports = (sequelize) => {
         isActive: {
             type: DataTypes.BOOLEAN,
             allowNull: false,
-            defaultValue: true
+            defaultValue: true,
+            field: 'is_active'  // ⭐ AGREGADO: mapeo a la columna PostgreSQL
         }
     }, {
         tableName: 'stores',
-        timestamps: true
+        timestamps: true,
+        createdAt: 'createdAt',  // ⭐ AGREGADO: mapeo explícito
+        updatedAt: 'updatedAt'   // ⭐ AGREGADO: mapeo explícito
     });
 
     return Store;
