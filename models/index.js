@@ -18,23 +18,24 @@ module.exports = (sequelize) => {
     const Store = StoreModel(sequelize);
 
     // --- ASOCIACIONES CON STORE ---
-    Store.hasMany(User, { foreignKey: 'tiendaId', as: 'users' });
-    User.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+    // ⭐ CORREGIDO: usar 'tienda_id' (como está en PostgreSQL)
+    Store.hasMany(User, { foreignKey: 'tienda_id', as: 'users' });
+    User.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    Store.hasMany(Client, { foreignKey: 'tiendaId', as: 'clients' });
-    Client.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+    Store.hasMany(Client, { foreignKey: 'tienda_id', as: 'clients' });
+    Client.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    Store.hasMany(Product, { foreignKey: 'tiendaId', as: 'products' });
-    Product.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+    Store.hasMany(Product, { foreignKey: 'tienda_id', as: 'products' });
+    Product.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    Store.hasMany(Sale, { foreignKey: 'tiendaId', as: 'sales' });
-    Sale.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+    Store.hasMany(Sale, { foreignKey: 'tienda_id', as: 'sales' });
+    Sale.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    Store.hasMany(Payment, { foreignKey: 'tiendaId', as: 'payments' });
-    Payment.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+    Store.hasMany(Payment, { foreignKey: 'tienda_id', as: 'payments' });
+    Payment.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    Store.hasMany(AuditLog, { foreignKey: 'tiendaId', as: 'auditLogs' });
-    AuditLog.belongsTo(Store, { foreignKey: 'tiendaId', as: 'store' });
+    Store.hasMany(AuditLog, { foreignKey: 'tienda_id', as: 'auditLogs' });
+    AuditLog.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
     // --- ASOCIACIONES EXISTENTES ---
     Sale.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
