@@ -121,9 +121,9 @@ const initReportRoutes = (models) => {
         try {
             const totalBalanceDue = await Sale.sum('balanceDue', { where: { ...req.storeFilter, isCredit: true, balanceDue: { [Op.gt]: 0  } } });
             const activeCreditSalesCount = await Sale.count({ where: { ...req.storeFilter, isCredit: true, balanceDue: { [Op.gt]: 0  } } });
-            const totalPaymentsReceived = await Payment.sum('amount');
-            const totalClientsCount = await Client.count();
-            const totalSalesCount = await Sale.count();
+            const totalPaymentsReceived = await Payment.sum('amount', { where: req.storeFilter });
+            const totalClientsCount = await Client.count({ where: req.storeFilter });
+            const totalSalesCount = await Sale.count({ where: req.storeFilter });
             res.json({
                 totalBalanceDue: totalBalanceDue || 0,
                 activeCreditSalesCount: activeCreditSalesCount || 0,
