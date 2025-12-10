@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const authorizeRoles = require('../middleware/roleMiddleware');
-const applyStoreFilter = require('../middleware/storeFilterMiddleware'); // ⭐ NUEVO
+const applyStoreFilter = require('../middleware/storeFilterMiddleware');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 
@@ -20,17 +20,15 @@ const initProductRoutes = (models) => {
         });
     });
 
-    // RUTA PARA LISTAR PRODUCTOS (PÚBLICA - PARA EL CATÁLOGO)
-    // Nota: Ruta pública muestra productos de TODAS las tiendas
+    // ⭐ RUTA PARA LISTAR PRODUCTOS (PÚBLICA CON FILTRO DE TIENDA)
     router.get('/', async (req, res) => {
         try {
             const { sortBy = 'createdAt', order = 'DESC', category, search, page = 1, limit = 10, tiendaId } = req.query;
             const options = { where: {}, order: [] };
             
-            // Si se especifica tiendaId en query params, filtrar por esa tienda
-            if (tiendaId) {
-                options.where.tiendaId = parseInt(tiendaId, 10);
-            }
+            // ⭐ CAMBIO CRÍTICO: Si no se especifica tiendaId, usar tienda 1 por defecto
+            const storeFiltro = tiendaId ? parseInt(tiendaId, 10) : 1;
+            options.where.tiendaId = storeFiltro;
             
             if (category) options.where.category = category;
             if (search) {
@@ -49,7 +47,8 @@ const initProductRoutes = (models) => {
                 totalItems: count,
                 totalPages: Math.ceil(count / options.limit),
                 currentPage: parseInt(page, 10),
-                products: rows
+                products: rows,
+                currentStore: storeFiltro // ⭐ NUEVO: Indica qué tienda se está mostrando
             });
         } catch (error) {
             console.error('Error al obtener productos:', error);
@@ -61,11 +60,11 @@ const initProductRoutes = (models) => {
     router.get('/export-excel', 
         authMiddleware, 
         authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']),
-        applyStoreFilter, // ⭐ NUEVO
+        applyStoreFilter,
         async (req, res) => {
             try {
                 const productsToExport = await Product.findAll({ 
-                    where: req.storeFilter, // ⭐ NUEVO
+                    where: req.storeFilter,
                     order: [['name', 'ASC']] 
                 });
                 const workbook = new ExcelJS.Workbook();
@@ -119,7 +118,6 @@ const initProductRoutes = (models) => {
                     return res.status(400).json({ message: 'Nombre, precio y stock son campos obligatorios.' });
                 }
                 
-                // ⭐ NUEVO: Agregar tiendaId automáticamente
                 const productData = {
                     name, 
                     description, 
@@ -139,7 +137,7 @@ const initProductRoutes = (models) => {
                         username: req.user.username,
                         action: 'CREÓ PRODUCTO',
                         details: `Producto: ${newProduct.name} (ID: ${newProduct.id}), Precio: $${newProduct.price}, Stock: ${newProduct.stock}`,
-                        tiendaId: req.user.tiendaId // ⭐ NUEVO
+                        tiendaId: req.user.tiendaId
                     });
                 } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
@@ -155,13 +153,12 @@ const initProductRoutes = (models) => {
     router.put('/:id', 
         authMiddleware, 
         authorizeRoles(['super_admin', 'regular_admin', 'inventory_admin']),
-        applyStoreFilter, // ⭐ NUEVO
+        applyStoreFilter,
         async (req, res) => {
             try {
                 const { id } = req.params;
                 const { name, description, price, stock, imageUrls, category, brand } = req.body;
                 
-                // ⭐ NUEVO: Buscar producto solo en la tienda del usuario
                 const product = await Product.findOne({
                     where: {
                         id: id,
@@ -173,7 +170,6 @@ const initProductRoutes = (models) => {
                     return res.status(404).json({ message: 'Producto no encontrado.' });
                 }
                 
-                // NO permitir cambiar tiendaId
                 delete req.body.tiendaId;
                 
                 await product.update({ name, description, price, stock, imageUrls, category, brand });
@@ -184,7 +180,7 @@ const initProductRoutes = (models) => {
                         username: req.user.username,
                         action: 'ACTUALIZÓ PRODUCTO',
                         details: `Producto: ${product.name} (ID: ${id})`,
-                        tiendaId: req.user.tiendaId // ⭐ NUEVO
+                        tiendaId: req.user.tiendaId
                     });
                 } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
@@ -200,12 +196,11 @@ const initProductRoutes = (models) => {
     router.delete('/:id', 
         authMiddleware, 
         authorizeRoles(['super_admin']),
-        applyStoreFilter, // ⭐ NUEVO
+        applyStoreFilter,
         async (req, res) => {
             try {
                 const { id } = req.params;
                 
-                // ⭐ NUEVO: Buscar producto solo en la tienda del usuario
                 const productToDelete = await Product.findOne({
                     where: {
                         id: id,
@@ -226,7 +221,7 @@ const initProductRoutes = (models) => {
                         username: req.user.username,
                         action: 'ELIMINÓ PRODUCTO',
                         details: `Producto: ${productNameForLog} (ID: ${id})`,
-                        tiendaId: req.user.tiendaId // ⭐ NUEVO
+                        tiendaId: req.user.tiendaId
                     });
                 } catch (auditError) { console.error("Error al registrar en auditoría:", auditError); }
 
