@@ -21,12 +21,7 @@ let isRegistrationAllowed = false;
 sequelize.authenticate()
   .then(() => {
     console.log('✅ Conexión exitosa a la base de datos.');
-
-    // --- CONFIGURACIÓN SEGURA PARA PRODUCCIÓN ---
-    // 'force: false' asegura que las tablas existentes y sus datos no se borren.
-    // Esta es la configuración que debes usar siempre en producción.
     return sequelize.sync({ force: false });
-    // --- FIN DE LA CONFIGURACIÓN SEGURA ---
   })
   .then(async () => {
     console.log('✅ Modelos sincronizados con la base de datos.');
@@ -35,32 +30,21 @@ sequelize.authenticate()
 
     app.use(express.json());
 
-    // CORS seguro: agrega tu dominio de frontend y localhost
-    const defaultFrontend = 'https://celfrontend.onrender.com';
-    const allowedOrigins = [
-      process.env.FRONTEND_URL,
-      defaultFrontend,
-      'http://localhost:5173'
-    ].filter(Boolean);
-
+    // CORS - Configuración corregida
     app.use(cors({
-      origin: (origin, callback) => {
-        // Permitir herramientas como Postman (sin origin) y tus orígenes
-        if (!origin || allowedOrigins.includes(origin)) {
-          callback(null, true);
-        } else {
-          callback(new Error('Acceso no permitido por CORS'));
-        }
-      }
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization']
     }));
 
-    // Log de peticiones (útil para monitoreo)
+    // Log de peticiones
     app.use((req, res, next) => {
       console.log(`--> Petición Recibida: ${req.method} ${req.originalUrl}`);
       next();
     });
 
-    // ---------- Montaje de rutas públicas ----------
+    // ---------- Rutas públicas ----------
     const initAuthRoutes = require('./routes/authRoutes');
     app.use('/api/auth', initAuthRoutes(models, isRegistrationAllowed));
 
@@ -73,7 +57,7 @@ sequelize.authenticate()
     const initProductRoutes = require('./routes/productRoutes');
     app.use('/api/products', initProductRoutes(models));
 
-    // ---------- Rutas protegidas (requieren token) ----------
+    // ---------- Rutas protegidas ----------
     const initClientRoutes = require('./routes/clientRoutes');
     app.use('/api/clients', authMiddleware, initClientRoutes(models));
 
@@ -92,20 +76,14 @@ sequelize.authenticate()
     const initDashboardRoutes = require('./routes/dashboardRoutes');
     app.use('/api/dashboard', authMiddleware, initDashboardRoutes(models));
 
-// ⭐ AGREGAR ESTAS 2 LÍNEAS AQUÍ:
-        const initStoreRoutes = require('./routes/storeRoutes');
-        app.use('/api/stores', authMiddleware, initStoreRoutes(models));
-        
-        console.log('✅ Todas las rutas principales han sido montadas.');
+    const initStoreRoutes = require('./routes/storeRoutes');
+    app.use('/api/stores', authMiddleware, initStoreRoutes(models));
 
-    // ---------- NUEVA RUTA: Recordatorios ----------
     const initRemindersRoutes = require('./routes/remindersRoutes');
     app.use('/api/reminders', authMiddleware, initRemindersRoutes(models));
-    
-    // ---------- NUEVA RUTA AÑADIDA: Gestión de Cobranza (CollectionLog) ----------
+
     const initCollectionRoutes = require('./routes/collectionRoutes');
-    // Le pasamos 'sequelize' y 'models' para que pueda acceder y/o definir el modelo CollectionLog
-    app.use('/api/collections', authMiddleware, initCollectionRoutes(models, sequelize)); 
+    app.use('/api/collections', authMiddleware, initCollectionRoutes(models, sequelize));
 
     console.log('✅ Todas las rutas principales han sido montadas.');
     app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
