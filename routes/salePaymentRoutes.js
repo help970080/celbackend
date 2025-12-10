@@ -50,8 +50,14 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 saleItemsToCreate.push({ productId: item.productId, quantity: item.quantity, priceAtSale: product.price });
             }
 
-            const saleData = { clientId, totalAmount, isCredit: !!isCredit, status: isCredit ? 'pending_credit' : 'completed', assignedCollectorId: isCredit && assignedCollectorId ? parseInt(assignedCollectorId) : null ,
-                    tiendaId: req.user.tiendaId // ⭐ NUEVO};
+            const saleData = { 
+                clientId, 
+                totalAmount, 
+                isCredit: !!isCredit, 
+                status: isCredit ? 'pending_credit' : 'completed', 
+                assignedCollectorId: isCredit && assignedCollectorId ? parseInt(assignedCollectorId) : null,
+                tiendaId: req.user.tiendaId // ⭐ NUEVO
+            };
 
             if (isCredit) {
                 const downPaymentFloat = parseFloat(downPayment);
