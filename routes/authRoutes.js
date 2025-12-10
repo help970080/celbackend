@@ -1,4 +1,4 @@
-// routes/authRoutes.js - VERSION DEBUG
+// routes/authRoutes.js (Versión Multi-Tenant - Final)
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
@@ -60,27 +60,12 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 return res.status(401).json({ message: 'Credenciales inválidas.' });
             }
             
-            // ⭐ DEBUG
-            console.log('=== DEBUG LOGIN ===');
-            console.log('user.store:', user.store);
-            console.log('user.tiendaId:', user.tiendaId);
-            console.log('user.tienda_id:', user.tienda_id);
-            console.log('user dataValues:', user.dataValues);
-            
             // Verificar que la tienda esté activa
             if (!user.store) {
-                return res.status(403).json({ 
-                    message: 'La tienda asociada no está activa.',
-                    debug: {
-                        hasStore: !!user.store,
-                        userTiendaId: user.tiendaId,
-                        userTienda_id: user.tienda_id,
-                        dataValues: user.dataValues
-                    }
-                });
+                return res.status(403).json({ message: 'La tienda asociada no existe.' });
             }
             
-            if (!user.store.isActive && !user.store.is_active) {
+            if (user.store.isActive === false) {
                 return res.status(403).json({ message: 'La tienda asociada no está activa.' });
             }
             
@@ -94,7 +79,7 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                     userId: user.id, 
                     username: user.username, 
                     role: user.role,
-                    tiendaId: user.tiendaId || user.tienda_id
+                    tiendaId: user.tiendaId
                 }, 
                 JWT_SECRET, 
                 { expiresIn: '1h' }
@@ -105,16 +90,12 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 token, 
                 username: user.username, 
                 role: user.role,
-                tiendaId: user.tiendaId || user.tienda_id,
-                storeName: user.store ? user.store.name : 'Sin tienda'
+                tiendaId: user.tiendaId,
+                storeName: user.store.name
             });
         } catch (error) {
             console.error('Error al iniciar sesión:', error);
-            res.status(500).json({ 
-                message: 'Error al iniciar sesión.',
-                error: error.message,
-                stack: error.stack
-            });
+            res.status(500).json({ message: 'Error al iniciar sesión.' });
         }
     });
 
