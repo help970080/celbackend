@@ -28,15 +28,16 @@ sequelize.authenticate()
     const adminCount = await models.User.count();
     isRegistrationAllowed = (adminCount === 0);
 
-    app.use(express.json());
-
-    // CORS - Configuración corregida
+    // CORS - DEBE IR PRIMERO
     app.use(cors({
       origin: true,
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization']
     }));
+
+    // JSON parser - DESPUÉS de CORS
+    app.use(express.json());
 
     // Log de peticiones
     app.use((req, res, next) => {
