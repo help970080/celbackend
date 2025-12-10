@@ -1,13 +1,15 @@
+// routes/authRoutes.js (Versión Multi-Tenant - Compatible con frontend existente)
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
-let User;
+let User, Store;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const initAuthRoutes = (models, isRegistrationAllowed) => { 
     User = models.User;
+    Store = models.Store;
 
     router.get('/is-registration-allowed', (req, res) => {
         res.json({ isRegistrationAllowed: isRegistrationAllowed });
@@ -17,12 +19,11 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
         if (!isRegistrationAllowed) {
             return res.status(403).json({ message: 'El registro de nuevos administradores está deshabilitado.' });
         }
-        const { username, password, tiendaId } = req.body;
         
-        // Validar que se proporcione tiendaId
-        if (!tiendaId) {
-            return res.status(400).json({ message: 'Debe especificar una tienda.' });
-        }
+        const { username, password } = req.body;
+        
+        // ⭐ CAMBIO: Si no se envía tiendaId, usar tienda 1 por defecto (compatibilidad con frontend)
+        const tiendaId = req.body.tiendaId || 1;
         
         try {
             const existingUserCount = await User.count();
@@ -35,7 +36,10 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 tiendaId: parseInt(tiendaId, 10)
             });
             
-            res.status(201).json({ message: 'Usuario registrado.', userId: newUser.id });
+            res.status(201).json({ 
+                message: 'Usuario registrado.', 
+                userId: newUser.id 
+            });
         } catch (error) {
             console.error('Error al registrar usuario:', error);
             res.status(500).json({ message: 'Error al registrar usuario.' });
@@ -48,7 +52,7 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
             const user = await User.findOne({ 
                 where: { username },
                 include: [{ 
-                    model: models.Store, 
+                    model: Store, 
                     as: 'store',
                     attributes: ['id', 'name', 'isActive']
                 }]
@@ -68,13 +72,13 @@ const initAuthRoutes = (models, isRegistrationAllowed) => {
                 return res.status(401).json({ message: 'Credenciales inválidas.' });
             }
             
-            // Incluir tiendaId en el token JWT
+            // ⭐ NUEVO: Incluir tiendaId en el token JWT
             const token = jwt.sign(
                 { 
                     userId: user.id, 
                     username: user.username, 
                     role: user.role,
-                    tiendaId: user.tiendaId // NUEVO
+                    tiendaId: user.tiendaId
                 }, 
                 JWT_SECRET, 
                 { expiresIn: '1h' }
