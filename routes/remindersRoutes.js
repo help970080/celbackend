@@ -1,33 +1,53 @@
-// routes/remindersRoutes.js
+// routes/remindersRoutes.js - VERSIÓN CORREGIDA
 
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
 const authorizeRoles = require('../middleware/roleMiddleware');
+const applyStoreFilter = require('../middleware/storeFilterMiddleware'); // ⭐ NUEVO
 
-// Importar utilidades de fecha del módulo de reportes (asumiendo que está en el mismo nivel)
-// Si no puedes usar require directamente, ajusta la importación según tu estructura.
-const { startOfDay, getNextDueDate, N } = require('./reportRoutes'); 
+// ⭐ CORRECCIÓN: Importar desde utils en lugar de reportRoutes
+const { startOfDay, getNextDueDate, N } = require('../utils/dateHelpers');
 
 // Referencias a Modelos
-let Sale, Client, User, Payment, CollectionLog; // Añadimos CollectionLog
+let Sale, Client, User, Payment, CollectionLog;
 
-// Función principal de lógica para los recordatorios
-const fetchRemindersLogic = async () => {
-    // 1. Obtener todas las ventas a crédito activas
+/**
+ * Lógica principal para obtener recordatorios de cobranza
+ * @param {Object} storeFilter - Filtro de tienda para multi-tenant
+ * @returns {Array} Lista de recordatorios ordenados por severidad
+ */
+const fetchRemindersLogic = async (storeFilter = {}) => {
+    // 1. Obtener todas las ventas a crédito activas (con filtro de tienda)
     const sales = await Sale.findAll({
-        where: { isCredit: true, balanceDue: { [Op.gt]: 0 } },
+        where: { 
+            isCredit: true, 
+            balanceDue: { [Op.gt]: 0 },
+            ...storeFilter // ⭐ APLICAR FILTRO MULTI-TENANT
+        },
         include: [
-            { model: Client, as: 'client' },
-            { model: Payment, as: 'payments', attributes: ['paymentDate'] },
-            // CRÍTICO: Incluir el último CollectionLog
+            { 
+                model: Client, 
+                as: 'client',
+                attributes: ['id', 'name', 'lastName', 'phone']
+            },
+            { 
+                model: Payment, 
+                as: 'payments', 
+                attributes: ['paymentDate'],
+                order: [['paymentDate', 'DESC']]
+            },
             { 
                 model: CollectionLog, 
-                as: 'collectionLogs', // Usamos el alias definido en models/index.js
+                as: 'collectionLogs',
                 limit: 1, 
                 order: [['date', 'DESC']],
-                separate: true, // Fuerza una consulta separada para usar LIMIT/ORDER correctamente en el include
-                include: [{ model: User, as: 'collector', attributes: ['username'] }] // Quién lo gestionó
+                separate: true, // Fuerza consulta separada para LIMIT/ORDER
+                include: [{ 
+                    model: User, 
+                    as: 'collector', 
+                    attributes: ['username'] 
+                }]
             }
         ],
     });
@@ -37,11 +57,13 @@ const fetchRemindersLogic = async () => {
     const remindersList = [];
 
     for (const sale of sales) {
-        if (N(sale.balanceDue) <= 0) continue; 
+        if (N(sale.balanceDue) <= 0) continue;
         
         // Determinar la última fecha de pago o de venta
         const lastPaymentDate = sale.payments?.length
-            ? sale.payments.slice().sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate))[0].paymentDate
+            ? sale.payments.slice().sort((a, b) => 
+                new Date(b.paymentDate) - new Date(a.paymentDate)
+              )[0].paymentDate
             : sale.saleDate;
 
         // Calcular la fecha del próximo vencimiento
@@ -62,6 +84,7 @@ const fetchRemindersLogic = async () => {
         remindersList.push({
             severity,
             daysLate,
+            dueDate: dueDate.toISOString().split('T')[0], // Formato YYYY-MM-DD
             client: {
                 id: sale.client.id,
                 name: sale.client.name,
@@ -73,23 +96,24 @@ const fetchRemindersLogic = async () => {
                 balanceDue: sale.balanceDue,
                 weeklyPaymentAmount: sale.weeklyPaymentAmount,
                 paymentFrequency: sale.paymentFrequency,
+                saleDate: sale.saleDate
             },
-            // CRÍTICO: Añadir los datos del último log
             lastManagement: lastLog ? {
                 date: lastLog.date,
                 result: lastLog.result,
-                collector: lastLog.collector?.username || 'N/A'
+                notes: lastLog.notes,
+                collector: lastLog.collector?.username || 'N/A',
+                nextActionDate: lastLog.nextActionDate
             } : null
         });
     }
 
+    // Ordenar por severidad y días de atraso
     return remindersList.sort((a, b) => {
-        // Primero, ordenar por severidad (ALTO, BAJO, POR_VENCER)
         const order = { 'ALTO': 1, 'BAJO': 2, 'POR_VENCER': 3 };
         if (order[a.severity] !== order[b.severity]) {
             return order[a.severity] - order[b.severity];
         }
-        // Segundo, ordenar por días de atraso (más atraso primero)
         return b.daysLate - a.daysLate;
     });
 };
@@ -102,21 +126,71 @@ const initRemindersRoutes = (models) => {
     Client = models.Client;
     User = models.User;
     Payment = models.Payment;
-    CollectionLog = models.CollectionLog; // Aseguramos que el modelo esté disponible
+    CollectionLog = models.CollectionLog;
 
-    // ---------------------------------------------------
-    // GET /api/reminders/overdue - Obtiene la lista de recordatorios y su último seguimiento
-    // ---------------------------------------------------
+    /**
+     * GET /api/reminders/overdue 
+     * Obtiene la lista de recordatorios de cobranza con último seguimiento
+     * Roles permitidos: super_admin, regular_admin, collector_agent
+     * Multi-tenant: Solo muestra recordatorios de la tienda del usuario
+     */
     router.get(
         '/overdue',
         authorizeRoles(['super_admin', 'regular_admin', 'collector_agent']),
+        applyStoreFilter, // ⭐ APLICAR FILTRO MULTI-TENANT
         async (req, res) => {
             try {
-                const reminders = await fetchRemindersLogic();
-                res.json(reminders);
+                const reminders = await fetchRemindersLogic(req.storeFilter);
+                
+                res.json({
+                    success: true,
+                    count: reminders.length,
+                    reminders: reminders
+                });
             } catch (err) {
                 console.error('Error al obtener recordatorios con gestión:', err);
-                res.status(500).json({ message: 'Error interno al cargar la lista de recordatorios.' });
+                res.status(500).json({ 
+                    success: false,
+                    message: 'Error interno al cargar la lista de recordatorios.',
+                    error: err.message 
+                });
+            }
+        }
+    );
+
+    /**
+     * GET /api/reminders/summary
+     * Obtiene resumen estadístico de recordatorios
+     */
+    router.get(
+        '/summary',
+        authorizeRoles(['super_admin', 'regular_admin', 'collector_agent']),
+        applyStoreFilter,
+        async (req, res) => {
+            try {
+                const reminders = await fetchRemindersLogic(req.storeFilter);
+                
+                const summary = {
+                    total: reminders.length,
+                    alto: reminders.filter(r => r.severity === 'ALTO').length,
+                    bajo: reminders.filter(r => r.severity === 'BAJO').length,
+                    porVencer: reminders.filter(r => r.severity === 'POR_VENCER').length,
+                    totalDebt: reminders.reduce((sum, r) => sum + N(r.sale.balanceDue), 0),
+                    withManagement: reminders.filter(r => r.lastManagement !== null).length,
+                    withoutManagement: reminders.filter(r => r.lastManagement === null).length
+                };
+                
+                res.json({
+                    success: true,
+                    summary: summary
+                });
+            } catch (err) {
+                console.error('Error al obtener resumen de recordatorios:', err);
+                res.status(500).json({ 
+                    success: false,
+                    message: 'Error al obtener resumen.',
+                    error: err.message 
+                });
             }
         }
     );

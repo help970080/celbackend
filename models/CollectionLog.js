@@ -1,4 +1,4 @@
-// models/CollectionLog.js
+// models/CollectionLog.js - VERSIÓN MEJORADA CON MULTI-TENANT
 
 const { DataTypes } = require('sequelize');
 
@@ -11,34 +11,68 @@ module.exports = (sequelize) => {
         },
         saleId: { 
             type: DataTypes.INTEGER, 
-            allowNull: false, 
-            references: { model: 'sales', key: 'id' } 
+            allowNull: false,
+            field: 'saleId', // Mapeo explícito
+            references: { 
+                model: 'sales', 
+                key: 'id' 
+            } 
         },
         collectorId: { 
             type: DataTypes.INTEGER, 
-            allowNull: false, 
-            references: { model: 'Usuarios', key: 'id' } 
+            allowNull: false,
+            field: 'collectorId', // Mapeo explícito
+            references: { 
+                model: 'Users', 
+                key: 'id' 
+            } 
         },
         result: { 
             type: DataTypes.STRING, 
-            allowNull: false // Ej: PROMISE, NO_ANSWER, PAID, etc.
+            allowNull: false,
+            comment: 'Resultado de la gestión: PROMISE, NO_ANSWER, PAID, REFUSED, etc.'
         }, 
         notes: { 
             type: DataTypes.TEXT, 
-            allowNull: true 
+            allowNull: true,
+            comment: 'Notas adicionales de la gestión'
         },
         date: {
             type: DataTypes.DATE,
             allowNull: false,
-            defaultValue: DataTypes.NOW
+            defaultValue: DataTypes.NOW,
+            comment: 'Fecha y hora de la gestión'
         },
         nextActionDate: { 
             type: DataTypes.DATEONLY, 
-            allowNull: true // Fecha para el próximo seguimiento
+            allowNull: true,
+            comment: 'Fecha programada para el próximo seguimiento'
         },
+        // ⭐ AGREGADO: tiendaId para multi-tenant
+        tiendaId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            field: 'tienda_id',
+            defaultValue: 1,
+            comment: 'ID de la tienda (multi-tenant)'
+        }
     }, {
         tableName: 'collection_logs',
-        timestamps: true
+        timestamps: true,
+        indexes: [
+            {
+                fields: ['saleId']
+            },
+            {
+                fields: ['collectorId']
+            },
+            {
+                fields: ['tienda_id'] // ⭐ Índice para optimizar consultas multi-tenant
+            },
+            {
+                fields: ['date']
+            }
+        ]
     });
     
     return CollectionLog;
