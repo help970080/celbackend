@@ -1,7 +1,9 @@
+// routes/dashboardRoutes.js - VERSIÓN CORREGIDA CON FILTROS MULTI-TENANT
+
 const express = require('express');
 const router = express.Router();
 const authorizeRoles = require('../middleware/roleMiddleware');
-const applyStoreFilter = require('../middleware/storeFilterMiddleware'); // ⭐ NUEVO
+const applyStoreFilter = require('../middleware/storeFilterMiddleware');
 const { Op } = require('sequelize');
 
 let Sale, Product, SaleItem;
@@ -14,16 +16,15 @@ const initDashboardRoutes = (models) => {
     // Ruta para obtener datos de ventas a lo largo del tiempo (para gráfica de líneas)
     router.get('/sales-over-time', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
-        applyStoreFilter, // ⭐ NUEVO
+        applyStoreFilter,
         async (req, res) => {
             try {
-                // ⭐ NUEVO: Filtrar por tienda
                 const salesData = await Sale.findAll({
                     attributes: [
                         [models.sequelize.fn('DATE', models.sequelize.col('saleDate')), 'date'],
                         [models.sequelize.fn('SUM', models.sequelize.col('totalAmount')), 'totalSales']
                     ],
-                    where: req.storeFilter,
+                    where: { ...req.storeFilter }, // ⭐ CORRECCIÓN: Spread operator
                     group: [models.sequelize.fn('DATE', models.sequelize.col('saleDate'))],
                     order: [[models.sequelize.fn('DATE', models.sequelize.col('saleDate')), 'ASC']],
                     raw: true
@@ -31,7 +32,11 @@ const initDashboardRoutes = (models) => {
                 res.json(salesData);
             } catch (error) {
                 console.error("Error al obtener datos para gráfica de ventas:", error);
-                res.status(500).json({ message: 'Error al obtener datos de ventas.' });
+                console.error("Stack trace:", error.stack);
+                res.status(500).json({ 
+                    message: 'Error al obtener datos de ventas.',
+                    error: error.message 
+                });
             }
         }
     );
@@ -39,21 +44,30 @@ const initDashboardRoutes = (models) => {
     // Ruta para obtener los productos más vendidos (para gráfica de pie/dona)
     router.get('/top-products', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']),
-        applyStoreFilter, // ⭐ NUEVO
+        applyStoreFilter,
         async (req, res) => {
             try {
-                // ⭐ NUEVO: Filtrar productos por tienda a través de las ventas
+                // ⭐ CORRECCIÓN: Filtrar por tienda a través de Sale, no Product
                 const topProducts = await SaleItem.findAll({
                     attributes: [
                         [models.sequelize.col('product.name'), 'productName'],
                         [models.sequelize.fn('SUM', models.sequelize.col('quantity')), 'totalSold']
                     ],
-                    include: [{
-                        model: Product,
-                        as: 'product',
-                        attributes: [],
-                        where: req.storeFilter // ⭐ NUEVO: Filtrar por tienda
-                    }],
+                    include: [
+                        {
+                            model: Product,
+                            as: 'product',
+                            attributes: [],
+                            required: true
+                        },
+                        {
+                            model: Sale,
+                            as: 'sale',
+                            attributes: [],
+                            where: { ...req.storeFilter }, // ⭐ Filtrar por tienda en Sale
+                            required: true
+                        }
+                    ],
                     group: ['product.name'],
                     order: [[models.sequelize.fn('SUM', models.sequelize.col('quantity')), 'DESC']],
                     limit: 5,
@@ -62,7 +76,11 @@ const initDashboardRoutes = (models) => {
                 res.json(topProducts);
             } catch (error) {
                 console.error("Error al obtener datos de top productos:", error);
-                res.status(500).json({ message: 'Error al obtener top productos.' });
+                console.error("Stack trace:", error.stack);
+                res.status(500).json({ 
+                    message: 'Error al obtener top productos.',
+                    error: error.message 
+                });
             }
         }
     );
