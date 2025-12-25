@@ -43,7 +43,7 @@ module.exports = (models, sequelize) => {
                     include: [{
                         model: User,
                         as: 'collector',
-                        attributes: ['id', 'username', 'name']
+                        attributes: ['id', 'username']
                     }]
                 });
 
@@ -81,7 +81,7 @@ module.exports = (models, sequelize) => {
                     include: [{
                         model: User,
                         as: 'collector',
-                        attributes: ['id', 'username', 'name']
+                        attributes: ['id', 'username']
                     }],
                     order: [['createdAt', 'DESC']]
                 });
@@ -132,7 +132,7 @@ module.exports = (models, sequelize) => {
                         {
                             model: User,
                             as: 'collector',
-                            attributes: ['id', 'username', 'name']
+                            attributes: ['id', 'username']
                         },
                         {
                             model: Sale,
@@ -175,7 +175,7 @@ module.exports = (models, sequelize) => {
                         {
                             model: User,
                             as: 'collector',
-                            attributes: ['id', 'username', 'name']
+                            attributes: ['id', 'username']
                         },
                         {
                             model: Sale,
@@ -258,7 +258,7 @@ module.exports = (models, sequelize) => {
                         proximoContacto: log.nextContactDate 
                             ? new Date(log.nextContactDate).toLocaleString('es-MX') 
                             : '',
-                        gestor: log.collector?.username || log.collector?.name || 'N/A',
+                        gestor: log.collector?.username || 'N/A',
                         ventaId: log.saleId
                     });
                 });
