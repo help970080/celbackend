@@ -1,3 +1,5 @@
+// routes/storeRoutes.js - VERSIÓN CORREGIDA CON ENDPOINT PÚBLICO
+
 const express = require('express');
 const router = express.Router();
 const authorizeRoles = require('../middleware/roleMiddleware');
@@ -7,6 +9,21 @@ let Store, AuditLog;
 const initStoreRoutes = (models) => {
     Store = models.Store;
     AuditLog = models.AuditLog;
+
+    // ⭐ NUEVO: ENDPOINT PÚBLICO - Obtener tiendas activas (SIN AUTENTICACIÓN)
+    router.get('/public', async (req, res) => {
+        try {
+            const stores = await Store.findAll({
+                where: { isActive: true },
+                attributes: ['id', 'name', 'address', 'phone', 'email'], // Solo datos públicos
+                order: [['name', 'ASC']]
+            });
+            res.json(stores);
+        } catch (error) {
+            console.error('Error al obtener tiendas públicas:', error);
+            res.status(500).json({ message: 'Error al cargar tiendas.' });
+        }
+    });
 
     // LISTAR TODAS LAS TIENDAS (solo super_admin)
     router.get('/', authorizeRoles(['super_admin']), async (req, res) => {
@@ -21,7 +38,7 @@ const initStoreRoutes = (models) => {
         }
     });
 
-    // OBTENER UNA TIENDA POR ID
+    // OBTENER UNA TIENDA POR ID (solo super_admin)
     router.get('/:id', authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const store = await Store.findByPk(req.params.id);
@@ -44,7 +61,13 @@ const initStoreRoutes = (models) => {
         }
 
         try {
-            const newStore = await Store.create({ name, address, phone, email });
+            const newStore = await Store.create({ 
+                name, 
+                address, 
+                phone, 
+                email,
+                isActive: true // ⭐ Por defecto activa
+            });
 
             // Registrar en auditoría
             try {
@@ -53,7 +76,7 @@ const initStoreRoutes = (models) => {
                     username: req.user.username,
                     action: 'CREÓ TIENDA',
                     details: `Tienda: ${newStore.name} (ID: ${newStore.id})`,
-                    tiendaId: req.user.tiendaId // Tienda del admin que creó
+                    tiendaId: req.user.tiendaId
                 });
             } catch (auditError) {
                 console.error("Error al registrar en auditoría:", auditError);
@@ -76,7 +99,14 @@ const initStoreRoutes = (models) => {
                 return res.status(404).json({ message: 'Tienda no encontrada.' });
             }
 
-            await store.update({ name, address, phone, email, isActive });
+            const updateData = {};
+            if (name !== undefined) updateData.name = name;
+            if (address !== undefined) updateData.address = address;
+            if (phone !== undefined) updateData.phone = phone;
+            if (email !== undefined) updateData.email = email;
+            if (isActive !== undefined) updateData.isActive = isActive;
+
+            await store.update(updateData);
 
             // Registrar en auditoría
             try {
@@ -98,7 +128,7 @@ const initStoreRoutes = (models) => {
         }
     });
 
-    // DESACTIVAR TIENDA (no eliminar, solo desactivar)
+    // DESACTIVAR/ELIMINAR TIENDA (solo super_admin)
     router.delete('/:id', authorizeRoles(['super_admin']), async (req, res) => {
         try {
             const store = await Store.findByPk(req.params.id);
@@ -106,7 +136,7 @@ const initStoreRoutes = (models) => {
                 return res.status(404).json({ message: 'Tienda no encontrada.' });
             }
 
-            // No eliminamos, solo desactivamos
+            // No eliminamos físicamente, solo desactivamos
             await store.update({ isActive: false });
 
             // Registrar en auditoría
@@ -122,7 +152,10 @@ const initStoreRoutes = (models) => {
                 console.error("Error al registrar en auditoría:", auditError);
             }
 
-            res.json({ message: 'Tienda desactivada correctamente.', store });
+            res.json({ 
+                message: 'Tienda desactivada correctamente.', 
+                store 
+            });
         } catch (error) {
             console.error('Error al desactivar tienda:', error);
             res.status(500).json({ message: 'Error al desactivar tienda.' });
