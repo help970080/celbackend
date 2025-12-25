@@ -1,262 +1,155 @@
-// routes/collectionRoutes.js - VERSIÓN CORREGIDA CON MULTI-TENANT
+// routes/collectionRoutes.js - Rutas de gestión de cobranza
 
 const express = require('express');
 const router = express.Router();
-const authorize = require('../middleware/authMiddleware'); 
 const authorizeRoles = require('../middleware/roleMiddleware');
-const applyStoreFilter = require('../middleware/storeFilterMiddleware'); // ⭐ NUEVO
-const exceljs = require('exceljs'); 
+const applyStoreFilter = require('../middleware/storeFilterMiddleware');
 
-// Referencias a Modelos
-let CollectionLog, Sale, User, Client; 
+module.exports = (models, sequelize) => {
+    const { CollectionLog, Sale, User, Client } = models;
 
-// =========================================================
-// FUNCIÓN DE INICIALIZACIÓN DE RUTAS
-// =========================================================
-const initCollectionRoutes = (models) => {
-    CollectionLog = models.CollectionLog;
-    Sale = models.Sale;
-    User = models.User;
-    Client = models.Client;
-
-    /**
-     * POST /api/collections/log - Registrar una gestión de cobranza
-     * ✅ CORREGIDO: Usa req.user.userId del token
-     * ⭐ NUEVO: Incluye tiendaId para multi-tenant
-     */
-    router.post(
-        '/log',
-        authorize, 
-        authorizeRoles(['super_admin', 'regular_admin', 'collector_agent']), 
+    // CREAR NUEVO LOG DE GESTIÓN
+    router.post('/', 
+        authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']),
+        applyStoreFilter,
         async (req, res) => {
-            const { saleId, result, notes, nextActionDate } = req.body; 
-            
-            // ✅ Obtener collectorId del token
-            const collectorIdFromToken = req.user.userId; 
-            const tiendaId = req.user.tiendaId; // ⭐ NUEVO
-
-            // Validaciones
-            if (!saleId || !result || !notes) {
-                return res.status(400).json({ 
-                    message: 'Campos saleId, result y notes son obligatorios.' 
-                });
-            }
-            
-            if (!collectorIdFromToken || collectorIdFromToken <= 0) {
-                return res.status(401).json({ 
-                    message: 'ID de gestor no encontrado en el token. Inicie sesión de nuevo.' 
-                });
-            }
-
             try {
-                // Verificar que la venta existe y pertenece a la tienda del usuario
+                const { saleId, contactType, contactResult, notes, nextContactDate } = req.body;
+
+                // Verificar que la venta pertenece a la tienda del usuario
                 const sale = await Sale.findOne({
                     where: {
                         id: saleId,
-                        tiendaId: tiendaId // ⭐ VERIFICAR MULTI-TENANT
+                        ...req.storeFilter
                     }
                 });
-                
+
                 if (!sale) {
-                    return res.status(404).json({ 
-                        message: 'Venta no encontrada o no pertenece a su tienda.' 
-                    });
+                    return res.status(404).json({ message: 'Venta no encontrada.' });
                 }
-                
-                // Crear el nuevo registro de gestión
-                const newLog = await CollectionLog.create({
-                    saleId: saleId,
-                    collectorId: collectorIdFromToken,
-                    result: result,
-                    notes: notes,
-                    date: new Date(), 
-                    nextActionDate: nextActionDate || null,
-                    tiendaId: tiendaId // ⭐ NUEVO
+
+                // Crear log
+                const log = await CollectionLog.create({
+                    saleId,
+                    collectorId: req.user.userId,
+                    contactType,
+                    contactResult,
+                    notes,
+                    nextContactDate: nextContactDate || null
                 });
 
-                res.status(201).json({ 
-                    success: true,
-                    message: 'Gestión registrada con éxito.', 
-                    log: newLog 
+                // Cargar con datos del usuario
+                const logWithUser = await CollectionLog.findByPk(log.id, {
+                    include: [{
+                        model: User,
+                        as: 'collector',
+                        attributes: ['id', 'username', 'name']
+                    }]
                 });
 
-            } catch (err) {
-                console.error('Error al registrar gestión de cobranza:', err);
-                res.status(500).json({ 
-                    success: false,
-                    message: 'Error interno del servidor al registrar la gestión.',
-                    error: err.message
-                });
+                res.status(201).json(logWithUser);
+            } catch (error) {
+                console.error('Error al crear log de gestión:', error);
+                res.status(500).json({ message: 'Error al crear log de gestión.' });
             }
         }
     );
 
-    /**
-     * GET /api/collections/log - Obtener historial de gestiones
-     * ⭐ NUEVO: Con filtro multi-tenant
-     */
-    router.get(
-        '/log',
-        authorize,
-        authorizeRoles(['super_admin', 'regular_admin', 'collector_agent', 'viewer_reports']),
-        applyStoreFilter, // ⭐ NUEVO
+    // OBTENER LOGS DE UNA VENTA
+    router.get('/sale/:saleId',
+        authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']),
+        applyStoreFilter,
         async (req, res) => {
             try {
-                const { saleId, collectorId, startDate, endDate, page = 1, limit = 50 } = req.query;
-                
-                const whereClause = { ...req.storeFilter }; // ⭐ FILTRO MULTI-TENANT
-                
-                if (saleId) {
-                    whereClause.saleId = parseInt(saleId, 10);
+                const { saleId } = req.params;
+
+                // Verificar que la venta pertenece a la tienda
+                const sale = await Sale.findOne({
+                    where: {
+                        id: saleId,
+                        ...req.storeFilter
+                    }
+                });
+
+                if (!sale) {
+                    return res.status(404).json({ message: 'Venta no encontrada.' });
                 }
-                
-                if (collectorId) {
-                    whereClause.collectorId = parseInt(collectorId, 10);
+
+                // Obtener logs
+                const logs = await CollectionLog.findAll({
+                    where: { saleId },
+                    include: [{
+                        model: User,
+                        as: 'collector',
+                        attributes: ['id', 'username', 'name']
+                    }],
+                    order: [['createdAt', 'DESC']]
+                });
+
+                res.json(logs);
+            } catch (error) {
+                console.error('Error al obtener logs:', error);
+                res.status(500).json({ message: 'Error al obtener logs.' });
+            }
+        }
+    );
+
+    // OBTENER LOGS DE UN CLIENTE (todas sus ventas)
+    router.get('/client/:clientId',
+        authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']),
+        applyStoreFilter,
+        async (req, res) => {
+            try {
+                const { clientId } = req.params;
+
+                // Verificar que el cliente pertenece a la tienda
+                const client = await Client.findOne({
+                    where: {
+                        id: clientId,
+                        ...req.storeFilter
+                    }
+                });
+
+                if (!client) {
+                    return res.status(404).json({ message: 'Cliente no encontrado.' });
                 }
-                
-                if (startDate && endDate) {
-                    whereClause.date = {
-                        [require('sequelize').Op.between]: [
-                            new Date(startDate),
-                            new Date(endDate)
-                        ]
-                    };
-                }
-                
-                const pageNum = parseInt(page, 10);
-                const limitNum = parseInt(limit, 10);
-                const offset = (pageNum - 1) * limitNum;
-                
-                const { count, rows } = await CollectionLog.findAndCountAll({
-                    where: whereClause,
+
+                // Obtener todas las ventas del cliente
+                const sales = await Sale.findAll({
+                    where: {
+                        clientId,
+                        ...req.storeFilter
+                    },
+                    attributes: ['id']
+                });
+
+                const saleIds = sales.map(s => s.id);
+
+                // Obtener logs de todas esas ventas
+                const logs = await CollectionLog.findAll({
+                    where: { saleId: saleIds },
                     include: [
-                        { 
-                            model: Sale, 
-                            as: 'sale',
-                            attributes: ['id', 'clientId', 'balanceDue'],
-                            include: [{
-                                model: Client,
-                                as: 'client',
-                                attributes: ['name', 'lastName', 'phone']
-                            }]
+                        {
+                            model: User,
+                            as: 'collector',
+                            attributes: ['id', 'username', 'name']
                         },
-                        { 
-                            model: User, 
-                            as: 'collector', 
-                            attributes: ['id', 'username'] 
+                        {
+                            model: Sale,
+                            as: 'sale',
+                            attributes: ['id', 'saleDate', 'totalAmount', 'balanceDue']
                         }
                     ],
-                    order: [['date', 'DESC']],
-                    limit: limitNum,
-                    offset: offset
+                    order: [['createdAt', 'DESC']]
                 });
-                
-                res.json({
-                    success: true,
-                    totalItems: count,
-                    totalPages: Math.ceil(count / limitNum),
-                    currentPage: pageNum,
-                    logs: rows
-                });
-                
-            } catch (err) {
-                console.error('Error al obtener logs de cobranza:', err);
-                res.status(500).json({ 
-                    success: false,
-                    message: 'Error al obtener historial de gestiones.',
-                    error: err.message
-                });
-            }
-        }
-    );
 
-    /**
-     * GET /api/collections/export-log - Exportar registro a Excel
-     * ⭐ NUEVO: Con filtro multi-tenant
-     */
-    router.get(
-        '/export-log',
-        authorize,
-        authorizeRoles(['super_admin', 'regular_admin', 'viewer_reports']),
-        applyStoreFilter, // ⭐ NUEVO
-        async (req, res) => {
-            try {
-                const logs = await CollectionLog.findAll({
-                    where: req.storeFilter, // ⭐ FILTRO MULTI-TENANT
-                    order: [['date', 'DESC']],
-                    include: [
-                        { 
-                            model: Sale, 
-                            as: 'sale',
-                            attributes: ['id', 'clientId', 'balanceDue'], 
-                            include: [{ 
-                                model: Client, 
-                                as: 'client', 
-                                attributes: ['name', 'lastName', 'phone'] 
-                            }]
-                        },
-                        { 
-                            model: User, 
-                            as: 'collector', 
-                            attributes: ['username'] 
-                        }
-                    ]
-                });
-                
-                const workbook = new exceljs.Workbook();
-                const worksheet = workbook.addWorksheet('Registro de Gestión de Cobranza');
-
-                // Configurar columnas
-                worksheet.columns = [
-                    { header: 'ID Log', key: 'id', width: 10 },
-                    { header: 'Fecha Gestión', key: 'date', width: 20 },
-                    { header: 'Gestor', key: 'collector', width: 25 },
-                    { header: 'Cliente', key: 'clientName', width: 30 },
-                    { header: 'Teléfono', key: 'phone', width: 15 },
-                    { header: 'ID Venta', key: 'saleId', width: 10 },
-                    { header: 'Saldo Venta Actual', key: 'saleBalance', width: 18 },
-                    { header: 'Resultado', key: 'result', width: 20 },
-                    { header: 'Notas', key: 'notes', width: 50 },
-                    { header: 'Próxima Acción', key: 'nextActionDate', width: 20 }
-                ];
-
-                // Agregar datos
-                logs.forEach(log => {
-                    const client = log.sale?.client;
-                    worksheet.addRow({
-                        id: log.id,
-                        date: log.date,
-                        collector: log.collector?.username || 'N/A',
-                        clientName: client ? `${client.name} ${client.lastName}` : 'N/A',
-                        phone: client?.phone || 'N/A',
-                        saleId: log.saleId,
-                        saleBalance: log.sale ? parseFloat(log.sale.balanceDue) : 0,
-                        result: log.result,
-                        notes: log.notes,
-                        nextActionDate: log.nextActionDate || ''
-                    });
-                });
-                
-                // Configurar encabezados de respuesta
-                const filename = `registro_gestiones_${new Date().toISOString().slice(0, 10)}.xlsx`;
-                res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-                res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-                
-                await workbook.xlsx.write(res);
-                res.end();
-                
-            } catch (err) {
-                console.error('Error al exportar logs de cobranza:', err);
-                res.status(500).json({ 
-                    success: false,
-                    message: 'Error al procesar la exportación del registro de cobranza.',
-                    error: err.message
-                });
+                res.json(logs);
+            } catch (error) {
+                console.error('Error al obtener logs del cliente:', error);
+                res.status(500).json({ message: 'Error al obtener logs.' });
             }
         }
     );
 
     return router;
 };
-
-module.exports = initCollectionRoutes;

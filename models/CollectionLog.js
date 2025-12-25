@@ -1,79 +1,68 @@
-// models/CollectionLog.js - VERSIÓN MEJORADA CON MULTI-TENANT
+// models/CollectionLog.js
 
 const { DataTypes } = require('sequelize');
 
 module.exports = (sequelize) => {
     const CollectionLog = sequelize.define('CollectionLog', {
-        id: { 
-            type: DataTypes.INTEGER, 
-            primaryKey: true, 
-            autoIncrement: true 
+        id: {
+            type: DataTypes.INTEGER,
+            primaryKey: true,
+            autoIncrement: true
         },
-        saleId: { 
-            type: DataTypes.INTEGER, 
+        saleId: {
+            type: DataTypes.INTEGER,
             allowNull: false,
-            field: 'saleId', // Mapeo explícito
-            references: { 
-                model: 'sales', 
-                key: 'id' 
-            } 
+            field: 'sale_id',
+            references: {
+                model: 'sales',
+                key: 'id'
+            }
         },
-        collectorId: { 
-            type: DataTypes.INTEGER, 
+        collectorId: {
+            type: DataTypes.INTEGER,
             allowNull: false,
-            field: 'collectorId', // Mapeo explícito
-            references: { 
-                model: 'Users', 
-                key: 'id' 
-            } 
+            field: 'collector_id',
+            references: {
+                model: 'users',
+                key: 'id'
+            }
         },
-        result: { 
-            type: DataTypes.STRING, 
+        contactType: {
+            type: DataTypes.STRING(50),
             allowNull: false,
-            comment: 'Resultado de la gestión: PROMISE, NO_ANSWER, PAID, REFUSED, etc.'
-        }, 
-        notes: { 
-            type: DataTypes.TEXT, 
+            field: 'contact_type'
+        },
+        contactResult: {
+            type: DataTypes.STRING(100),
             allowNull: true,
-            comment: 'Notas adicionales de la gestión'
+            field: 'contact_result'
         },
-        date: {
+        notes: {
+            type: DataTypes.TEXT,
+            allowNull: true
+        },
+        nextContactDate: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            field: 'next_contact_date'
+        },
+        createdAt: {
             type: DataTypes.DATE,
             allowNull: false,
             defaultValue: DataTypes.NOW,
-            comment: 'Fecha y hora de la gestión'
+            field: 'created_at'
         },
-        nextActionDate: { 
-            type: DataTypes.DATEONLY, 
-            allowNull: true,
-            comment: 'Fecha programada para el próximo seguimiento'
-        },
-        // ⭐ AGREGADO: tiendaId para multi-tenant
-        tiendaId: {
-            type: DataTypes.INTEGER,
+        updatedAt: {
+            type: DataTypes.DATE,
             allowNull: false,
-            field: 'tienda_id',
-            defaultValue: 1,
-            comment: 'ID de la tienda (multi-tenant)'
+            defaultValue: DataTypes.NOW,
+            field: 'updated_at'
         }
     }, {
         tableName: 'collection_logs',
         timestamps: true,
-        indexes: [
-            {
-                fields: ['saleId']
-            },
-            {
-                fields: ['collectorId']
-            },
-            {
-                fields: ['tienda_id'] // ⭐ Índice para optimizar consultas multi-tenant
-            },
-            {
-                fields: ['date']
-            }
-        ]
+        underscored: true
     });
-    
+
     return CollectionLog;
 };

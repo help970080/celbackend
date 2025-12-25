@@ -1,4 +1,4 @@
-// server.js - VERSIÓN CORREGIDA CON RUTA PÚBLICA DE STORES
+// server.js - VERSIÓN CON COLLECTION LOGS
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -27,6 +27,48 @@ sequelize.authenticate()
     console.log('✅ Modelos sincronizados con la base de datos.');
     const adminCount = await models.User.count();
     isRegistrationAllowed = (adminCount === 0);
+
+    // ⭐ CREAR TABLA COLLECTION_LOGS
+    try {
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS collection_logs (
+          id SERIAL PRIMARY KEY,
+          sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+          collector_id INTEGER NOT NULL REFERENCES users(id),
+          contact_type VARCHAR(50) NOT NULL,
+          contact_result VARCHAR(100),
+          notes TEXT,
+          next_contact_date TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_collection_logs_sale ON collection_logs(sale_id);
+        CREATE INDEX IF NOT EXISTS idx_collection_logs_collector ON collection_logs(collector_id);
+        CREATE INDEX IF NOT EXISTS idx_collection_logs_created ON collection_logs(created_at DESC);
+        
+        CREATE OR REPLACE FUNCTION update_collection_logs_updated_at()
+        RETURNS TRIGGER AS $$
+        BEGIN
+          NEW.updated_at = CURRENT_TIMESTAMP;
+          RETURN NEW;
+        END;
+        $$ language 'plpgsql';
+
+        DROP TRIGGER IF EXISTS update_collection_logs_trigger ON collection_logs;
+        CREATE TRIGGER update_collection_logs_trigger
+          BEFORE UPDATE ON collection_logs
+          FOR EACH ROW
+          EXECUTE FUNCTION update_collection_logs_updated_at();
+      `);
+      console.log('✅ Tabla collection_logs creada/verificada exitosamente');
+    } catch (e) {
+      if (e.message.includes('already exists')) {
+        console.log('✅ Tabla collection_logs ya existe');
+      } else {
+        console.log('⚠️  Info tabla collection_logs:', e.message);
+      }
+    }
 
     // CORS - DEBE IR PRIMERO
     app.use(cors({
@@ -58,7 +100,7 @@ sequelize.authenticate()
     const initProductRoutes = require('./routes/productRoutes');
     app.use('/api/products', initProductRoutes(models));
 
-    // ⭐ NUEVO: Ruta pública de tiendas (ANTES de aplicar authMiddleware)
+    // Ruta pública de tiendas (ANTES de aplicar authMiddleware)
     app.get('/api/stores/public', async (req, res) => {
       try {
         const stores = await models.Store.findAll({
