@@ -1,4 +1,4 @@
-// server.js - VERSIÓN CON COLLECTION LOGS
+// server.js - VERSIÓN CON DROP Y RECREACIÓN DE TABLA
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -28,10 +28,16 @@ sequelize.authenticate()
     const adminCount = await models.User.count();
     isRegistrationAllowed = (adminCount === 0);
 
-    // ⭐ CREAR TABLA COLLECTION_LOGS
+    // ⭐ BORRAR Y RECREAR TABLA COLLECTION_LOGS
     try {
+      console.log('🔄 Recreando tabla collection_logs...');
+      
       await sequelize.query(`
-        CREATE TABLE IF NOT EXISTS collection_logs (
+        -- Borrar tabla si existe (con CASCADE para eliminar dependencias)
+        DROP TABLE IF EXISTS collection_logs CASCADE;
+        
+        -- Crear tabla nueva
+        CREATE TABLE collection_logs (
           id SERIAL PRIMARY KEY,
           sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
           collector_id INTEGER NOT NULL REFERENCES users(id),
@@ -43,10 +49,12 @@ sequelize.authenticate()
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
-        CREATE INDEX IF NOT EXISTS idx_collection_logs_sale ON collection_logs(sale_id);
-        CREATE INDEX IF NOT EXISTS idx_collection_logs_collector ON collection_logs(collector_id);
-        CREATE INDEX IF NOT EXISTS idx_collection_logs_created ON collection_logs(created_at DESC);
+        -- Crear índices
+        CREATE INDEX idx_collection_logs_sale ON collection_logs(sale_id);
+        CREATE INDEX idx_collection_logs_collector ON collection_logs(collector_id);
+        CREATE INDEX idx_collection_logs_created ON collection_logs(created_at DESC);
         
+        -- Crear función para updated_at
         CREATE OR REPLACE FUNCTION update_collection_logs_updated_at()
         RETURNS TRIGGER AS $$
         BEGIN
@@ -55,19 +63,17 @@ sequelize.authenticate()
         END;
         $$ language 'plpgsql';
 
+        -- Crear trigger
         DROP TRIGGER IF EXISTS update_collection_logs_trigger ON collection_logs;
         CREATE TRIGGER update_collection_logs_trigger
           BEFORE UPDATE ON collection_logs
           FOR EACH ROW
           EXECUTE FUNCTION update_collection_logs_updated_at();
       `);
-      console.log('✅ Tabla collection_logs creada/verificada exitosamente');
+      
+      console.log('✅ Tabla collection_logs recreada exitosamente');
     } catch (e) {
-      if (e.message.includes('already exists')) {
-        console.log('✅ Tabla collection_logs ya existe');
-      } else {
-        console.log('⚠️  Info tabla collection_logs:', e.message);
-      }
+      console.error('❌ Error al recrear tabla collection_logs:', e.message);
     }
 
     // CORS - DEBE IR PRIMERO
