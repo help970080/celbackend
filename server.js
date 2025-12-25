@@ -1,4 +1,4 @@
-// server.js - VERSIÓN CON DROP Y RECREACIÓN DE TABLA
+// server.js - VERSIÓN QUE MUESTRA TABLAS EN LOGS
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -28,19 +28,36 @@ sequelize.authenticate()
     const adminCount = await models.User.count();
     isRegistrationAllowed = (adminCount === 0);
 
-    // ⭐ BORRAR Y RECREAR TABLA COLLECTION_LOGS
+    // ⭐ VER TODAS LAS TABLAS DE LA BASE DE DATOS
     try {
-      console.log('🔄 Recreando tabla collection_logs...');
+      console.log('🔍 Listando todas las tablas de la base de datos...');
+      const [results] = await sequelize.query(`
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        ORDER BY table_name;
+      `);
+      
+      console.log('📋 TABLAS ENCONTRADAS:');
+      results.forEach(row => {
+        console.log('  - ' + row.table_name);
+      });
+      console.log('📋 Total de tablas:', results.length);
+    } catch (e) {
+      console.error('❌ Error al listar tablas:', e.message);
+    }
+
+    // ⭐ CREAR TABLA COLLECTION_LOGS SIN FOREIGN KEYS
+    try {
+      console.log('🔄 Creando tabla collection_logs...');
       
       await sequelize.query(`
-        -- Borrar tabla si existe (con CASCADE para eliminar dependencias)
         DROP TABLE IF EXISTS collection_logs CASCADE;
         
-        -- Crear tabla nueva
         CREATE TABLE collection_logs (
           id SERIAL PRIMARY KEY,
-          sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-          collector_id INTEGER NOT NULL REFERENCES users(id),
+          sale_id INTEGER NOT NULL,
+          collector_id INTEGER NOT NULL,
           contact_type VARCHAR(50) NOT NULL,
           contact_result VARCHAR(100),
           notes TEXT,
@@ -49,31 +66,14 @@ sequelize.authenticate()
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
-        -- Crear índices
         CREATE INDEX idx_collection_logs_sale ON collection_logs(sale_id);
         CREATE INDEX idx_collection_logs_collector ON collection_logs(collector_id);
         CREATE INDEX idx_collection_logs_created ON collection_logs(created_at DESC);
-        
-        -- Crear función para updated_at
-        CREATE OR REPLACE FUNCTION update_collection_logs_updated_at()
-        RETURNS TRIGGER AS $$
-        BEGIN
-          NEW.updated_at = CURRENT_TIMESTAMP;
-          RETURN NEW;
-        END;
-        $$ language 'plpgsql';
-
-        -- Crear trigger
-        DROP TRIGGER IF EXISTS update_collection_logs_trigger ON collection_logs;
-        CREATE TRIGGER update_collection_logs_trigger
-          BEFORE UPDATE ON collection_logs
-          FOR EACH ROW
-          EXECUTE FUNCTION update_collection_logs_updated_at();
       `);
       
-      console.log('✅ Tabla collection_logs recreada exitosamente');
+      console.log('✅ Tabla collection_logs creada exitosamente');
     } catch (e) {
-      console.error('❌ Error al recrear tabla collection_logs:', e.message);
+      console.error('❌ Error al crear tabla:', e.message);
     }
 
     // CORS - DEBE IR PRIMERO
@@ -106,7 +106,7 @@ sequelize.authenticate()
     const initProductRoutes = require('./routes/productRoutes');
     app.use('/api/products', initProductRoutes(models));
 
-    // Ruta pública de tiendas (ANTES de aplicar authMiddleware)
+    // Ruta pública de tiendas
     app.get('/api/stores/public', async (req, res) => {
       try {
         const stores = await models.Store.findAll({
