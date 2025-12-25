@@ -1,4 +1,4 @@
-// server.js
+// server.js - VERSIÓN CORREGIDA CON RUTA PÚBLICA DE STORES
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -57,6 +57,21 @@ sequelize.authenticate()
 
     const initProductRoutes = require('./routes/productRoutes');
     app.use('/api/products', initProductRoutes(models));
+
+    // ⭐ NUEVO: Ruta pública de tiendas (ANTES de aplicar authMiddleware)
+    app.get('/api/stores/public', async (req, res) => {
+      try {
+        const stores = await models.Store.findAll({
+          where: { isActive: true },
+          attributes: ['id', 'name', 'address', 'phone', 'email'],
+          order: [['name', 'ASC']]
+        });
+        res.json(stores);
+      } catch (error) {
+        console.error('Error al obtener tiendas públicas:', error);
+        res.status(500).json({ message: 'Error al cargar tiendas.' });
+      }
+    });
 
     // ---------- Rutas protegidas ----------
     const initClientRoutes = require('./routes/clientRoutes');
