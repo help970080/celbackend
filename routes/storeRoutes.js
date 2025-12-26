@@ -1,4 +1,4 @@
-// routes/storeRoutes.js - VERSIÓN CORREGIDA CON ENDPOINT PÚBLICO
+// routes/storeRoutes.js - CON CAMPO depositInfo
 
 const express = require('express');
 const router = express.Router();
@@ -10,12 +10,12 @@ const initStoreRoutes = (models) => {
     Store = models.Store;
     AuditLog = models.AuditLog;
 
-    // ⭐ NUEVO: ENDPOINT PÚBLICO - Obtener tiendas activas (SIN AUTENTICACIÓN)
+    // ENDPOINT PÚBLICO - Obtener tiendas activas (SIN AUTENTICACIÓN)
     router.get('/public', async (req, res) => {
         try {
             const stores = await Store.findAll({
                 where: { isActive: true },
-                attributes: ['id', 'name', 'address', 'phone', 'email'], // Solo datos públicos
+                attributes: ['id', 'name', 'address', 'phone', 'email'], // Sin depositInfo por seguridad
                 order: [['name', 'ASC']]
             });
             res.json(stores);
@@ -54,7 +54,7 @@ const initStoreRoutes = (models) => {
 
     // CREAR NUEVA TIENDA (solo super_admin)
     router.post('/', authorizeRoles(['super_admin']), async (req, res) => {
-        const { name, address, phone, email } = req.body;
+        const { name, address, phone, email, depositInfo } = req.body; // ⭐ AGREGADO depositInfo
         
         if (!name) {
             return res.status(400).json({ message: 'El nombre de la tienda es obligatorio.' });
@@ -66,7 +66,8 @@ const initStoreRoutes = (models) => {
                 address, 
                 phone, 
                 email,
-                isActive: true // ⭐ Por defecto activa
+                depositInfo, // ⭐ AGREGADO
+                isActive: true
             });
 
             // Registrar en auditoría
@@ -91,7 +92,7 @@ const initStoreRoutes = (models) => {
 
     // ACTUALIZAR TIENDA (solo super_admin)
     router.put('/:id', authorizeRoles(['super_admin']), async (req, res) => {
-        const { name, address, phone, email, isActive } = req.body;
+        const { name, address, phone, email, depositInfo, isActive } = req.body; // ⭐ AGREGADO depositInfo
 
         try {
             const store = await Store.findByPk(req.params.id);
@@ -104,6 +105,7 @@ const initStoreRoutes = (models) => {
             if (address !== undefined) updateData.address = address;
             if (phone !== undefined) updateData.phone = phone;
             if (email !== undefined) updateData.email = email;
+            if (depositInfo !== undefined) updateData.depositInfo = depositInfo; // ⭐ AGREGADO
             if (isActive !== undefined) updateData.isActive = isActive;
 
             await store.update(updateData);

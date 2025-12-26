@@ -1,4 +1,4 @@
-// routes/salePaymentRoutes.js - VERSIÓN CORREGIDA CON VALIDACIONES MULTI-TENANT
+// routes/salePaymentRoutes.js - VERSIÓN CORREGIDA CON MULTI-TENANT Y STORE EN RECIBO
 
 const express = require('express');
 const router = express.Router();
@@ -9,7 +9,7 @@ const applyStoreFilter = require('../middleware/storeFilterMiddleware');
 const moment = require('moment-timezone');
 const ExcelJS = require('exceljs');
 
-let Sale, Client, Product, Payment, SaleItem, User, AuditLog;
+let Sale, Client, Product, Payment, SaleItem, User, AuditLog, Store; // ⭐ AGREGADO Store
 const TIMEZONE = "America/Mexico_City";
 
 const initSalePaymentRoutes = (models, sequelize) => {
@@ -20,11 +20,12 @@ const initSalePaymentRoutes = (models, sequelize) => {
     SaleItem = models.SaleItem;
     User = models.User;
     AuditLog = models.AuditLog;
+    Store = models.Store; // ⭐ AGREGADO
 
-    // ⭐ POST / - Crear venta (CORREGIDO: Agregado applyStoreFilter)
+    // ⭐ POST / - Crear venta
     router.post('/', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
-        applyStoreFilter, // ⭐ CRÍTICO: Validar tienda
+        applyStoreFilter,
         async (req, res) => {
             const { clientId, saleItems, isCredit, downPayment, assignedCollectorId, paymentFrequency, numberOfPayments } = req.body;
 
@@ -34,11 +35,11 @@ const initSalePaymentRoutes = (models, sequelize) => {
             
             const t = await sequelize.transaction();
             try {
-                // ⭐ VALIDACIÓN CRÍTICA: Verificar que el cliente pertenece a la tienda del usuario
+                // Verificar que el cliente pertenece a la tienda del usuario
                 const client = await Client.findOne({
                     where: { 
                         id: clientId,
-                        ...req.storeFilter // ⭐ FILTRO MULTI-TENANT
+                        ...req.storeFilter
                     },
                     transaction: t
                 });
@@ -58,11 +59,10 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 const saleItemsToCreate = [];
 
                 for (const item of saleItems) {
-                    // ⭐ VALIDACIÓN CRÍTICA: Verificar que el producto pertenece a la tienda
                     const product = await Product.findOne({
                         where: {
                             id: item.productId,
-                            ...req.storeFilter // ⭐ FILTRO MULTI-TENANT
+                            ...req.storeFilter
                         },
                         transaction: t,
                         lock: true
@@ -87,7 +87,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     isCredit: !!isCredit, 
                     status: isCredit ? 'pending_credit' : 'completed', 
                     assignedCollectorId: isCredit && assignedCollectorId ? parseInt(assignedCollectorId) : null,
-                    tiendaId: req.user.tiendaId // ⭐ ASIGNAR TIENDA
+                    tiendaId: req.user.tiendaId
                 };
 
                 if (isCredit) {
@@ -134,7 +134,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                         amount: newSale.downPayment,
                         paymentMethod: 'cash',
                         notes: paymentNotes,
-                        tiendaId: req.user.tiendaId // ⭐ ASIGNAR TIENDA AL PAGO
+                        tiendaId: req.user.tiendaId
                     }, { transaction: t });
                 }
 
@@ -160,7 +160,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // GET / - Listar ventas (YA CORRECTO)
+    // GET / - Listar ventas
     router.get('/', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
         applyStoreFilter, 
@@ -209,7 +209,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // GET /export-excel - Exportar ventas (YA CORRECTO)
+    // GET /export-excel - Exportar ventas
     router.get('/export-excel', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), 
         applyStoreFilter, 
@@ -306,7 +306,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // GET /:saleId - Obtener venta específica (YA CORRECTO)
+    // ⭐ GET /:saleId - Obtener venta específica (CORREGIDO: INCLUYE STORE)
     router.get('/:saleId', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), 
         applyStoreFilter, 
@@ -322,7 +322,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                         { model: Client, as: 'client' },
                         { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
                         { model: User, as: 'assignedCollector', attributes: ['id', 'username'] },
-                        { model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] }
+                        { model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] },
+                        { model: Store, as: 'store', attributes: ['id', 'name', 'address', 'phone', 'email', 'depositInfo'] } // ⭐ INCLUYE depositInfo
                     ]
                 });
 
@@ -338,7 +339,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // PUT /:saleId/assign - Asignar gestor (YA CORRECTO)
+    // PUT /:saleId/assign - Asignar gestor
     router.put('/:saleId/assign', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
         applyStoreFilter, 
@@ -387,20 +388,19 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // ⭐ POST /:saleId/payments - Registrar pago (CORREGIDO)
+    // POST /:saleId/payments - Registrar pago
     router.post('/:saleId/payments', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), 
-        applyStoreFilter, // ⭐ CRÍTICO
+        applyStoreFilter,
         async (req, res) => {
             const { amount, paymentMethod, notes } = req.body;
             const { saleId } = req.params;
             
             try {
-                // ⭐ VALIDACIÓN CRÍTICA: Verificar que la venta pertenece a la tienda del usuario
                 const sale = await Sale.findOne({
                     where: {
                         id: saleId,
-                        ...req.storeFilter // ⭐ FILTRO MULTI-TENANT
+                        ...req.storeFilter
                     }
                 });
                 
@@ -421,7 +421,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     amount: parseFloat(amount), 
                     paymentMethod: paymentMethod || 'cash', 
                     notes,
-                    tiendaId: req.user.tiendaId // ⭐ ASIGNAR TIENDA AL PAGO
+                    tiendaId: req.user.tiendaId
                 });
 
                 let newBalance = sale.balanceDue - amount;
@@ -454,7 +454,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // DELETE /payments/:paymentId - Cancelar pago (YA CORRECTO)
+    // DELETE /payments/:paymentId - Cancelar pago
     router.delete('/payments/:paymentId', 
         authMiddleware, 
         authorizeRoles(['super_admin']), 
@@ -512,10 +512,10 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // ⭐ DELETE /:saleId - Eliminar venta (CORREGIDO)
+    // DELETE /:saleId - Eliminar venta
     router.delete('/:saleId', 
         authorizeRoles(['super_admin']), 
-        applyStoreFilter, // ⭐ CRÍTICO
+        applyStoreFilter,
         async (req, res) => {
             const { saleId } = req.params;
             if (isNaN(parseInt(saleId, 10))) {
@@ -524,11 +524,10 @@ const initSalePaymentRoutes = (models, sequelize) => {
 
             const t = await sequelize.transaction();
             try {
-                // ⭐ VALIDACIÓN CRÍTICA: Verificar que la venta pertenece a la tienda del usuario
                 const saleToDelete = await Sale.findOne({
                     where: {
                         id: saleId,
-                        ...req.storeFilter // ⭐ FILTRO MULTI-TENANT
+                        ...req.storeFilter
                     },
                     include: [{ model: SaleItem, as: 'saleItems' }],
                     transaction: t
