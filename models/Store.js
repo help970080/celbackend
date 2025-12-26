@@ -1,4 +1,4 @@
-// models/Store.js - CON CAMPO depositInfo PARA MULTI-TENANT
+// models/Store.js - CORREGIDO PARA POSTGRESQL (snake_case)
 
 const { DataTypes } = require('sequelize');
 
@@ -11,41 +11,38 @@ module.exports = (sequelize) => {
         },
         name: {
             type: DataTypes.STRING,
-            allowNull: false,
-            comment: 'Nombre de la tienda'
+            allowNull: false
         },
         address: {
             type: DataTypes.TEXT,
-            allowNull: true,
-            comment: 'Dirección física de la tienda'
+            allowNull: true
         },
         phone: {
             type: DataTypes.STRING,
-            allowNull: true,
-            comment: 'Teléfono de contacto'
+            allowNull: true
         },
         email: {
             type: DataTypes.STRING,
             allowNull: true,
             validate: {
                 isEmail: true
-            },
-            comment: 'Correo electrónico de la tienda'
+            }
         },
         depositInfo: {
             type: DataTypes.TEXT,
             allowNull: true,
-            comment: 'Información de cuenta para depósitos (OXXO, banco, CLABE, etc.)'
+            field: 'deposit_info' // ⭐ Mapeo a snake_case en BD
         },
         isActive: {
             type: DataTypes.BOOLEAN,
             allowNull: false,
             defaultValue: true,
-            comment: 'Indica si la tienda está activa'
+            field: 'is_active' // ⭐ Mapeo a snake_case en BD
         }
     }, {
         tableName: 'stores',
-        timestamps: true
+        timestamps: true,
+        underscored: true // ⭐ Esto hace que createdAt → created_at, etc.
     });
 
     return Store;
