@@ -199,11 +199,11 @@ const initClientDocumentsRoutes = (models) => {
                     return res.status(404).json({ message: 'Cliente no encontrado' });
                 }
 
-                // Determinar estado basado en score
+                // Determinar estado basado en score (umbrales ajustados)
                 let status = 'pendiente';
-                if (score >= 70) {
+                if (score >= 50) {
                     status = 'verificado';
-                } else if (score >= 50) {
+                } else if (score >= 30) {
                     status = 'revision';
                 } else {
                     status = 'rechazado';
