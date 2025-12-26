@@ -1,4 +1,4 @@
-// server.js - VERSIÓN QUE MUESTRA TABLAS EN LOGS
+// server.js - CON RUTAS DE DOCUMENTOS DE CLIENTE
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -124,6 +124,10 @@ sequelize.authenticate()
     // ---------- Rutas protegidas ----------
     const initClientRoutes = require('./routes/clientRoutes');
     app.use('/api/clients', authMiddleware, initClientRoutes(models));
+
+    // ⭐ NUEVO: Rutas de documentos de cliente (INE, selfie, verificación facial)
+    const initClientDocumentsRoutes = require('./routes/clientDocumentsRoutes');
+    app.use('/api/clients', authMiddleware, initClientDocumentsRoutes(models));
 
     const initSalePaymentRoutes = require('./routes/salePaymentRoutes');
     app.use('/api/sales', authMiddleware, initSalePaymentRoutes(models, sequelize));
