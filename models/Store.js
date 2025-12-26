@@ -1,4 +1,4 @@
-// models/Store.js - CORREGIDO PARA POSTGRESQL (snake_case)
+// models/Store.js - CORREGIDO SIN UNDERSCORED
 
 const { DataTypes } = require('sequelize');
 
@@ -31,18 +31,18 @@ module.exports = (sequelize) => {
         depositInfo: {
             type: DataTypes.TEXT,
             allowNull: true,
-            field: 'deposit_info' // ⭐ Mapeo a snake_case en BD
+            field: 'deposit_info' // ⭐ Solo este campo usa snake_case
         },
         isActive: {
             type: DataTypes.BOOLEAN,
             allowNull: false,
             defaultValue: true,
-            field: 'is_active' // ⭐ Mapeo a snake_case en BD
+            field: 'is_active' // ⭐ Solo este campo usa snake_case
         }
     }, {
         tableName: 'stores',
-        timestamps: true,
-        underscored: true // ⭐ Esto hace que createdAt → created_at, etc.
+        timestamps: true
+        // ❌ SIN underscored - tu BD usa createdAt/updatedAt en camelCase
     });
 
     return Store;
