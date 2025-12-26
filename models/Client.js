@@ -1,3 +1,5 @@
+// models/Client.js - CON CAMPOS PARA DOCUMENTOS Y VERIFICACIÓN FACIAL
+
 const { DataTypes } = require('sequelize');
 const bcrypt = require('bcryptjs');
 
@@ -6,7 +8,7 @@ module.exports = (sequelize) => {
         id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
         name: { type: DataTypes.STRING, allowNull: false },
         lastName: { type: DataTypes.STRING, allowNull: false },
-        phone: { type: DataTypes.STRING, allowNull: false }, // unique manejado por tienda
+        phone: { type: DataTypes.STRING, allowNull: false },
         email: { type: DataTypes.STRING, allowNull: true, validate: { isEmail: true } },
         password: {
             type: DataTypes.STRING,
@@ -23,9 +25,61 @@ module.exports = (sequelize) => {
             allowNull: false,
             field: 'tienda_id',
             defaultValue: 1
+        },
+        
+        // ⭐ NUEVOS CAMPOS PARA DOCUMENTOS
+        ineFrente: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            field: 'ine_frente',
+            comment: 'URL de Cloudinary - Foto INE frente'
+        },
+        ineReverso: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            field: 'ine_reverso',
+            comment: 'URL de Cloudinary - Foto INE reverso'
+        },
+        selfie: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            comment: 'URL de Cloudinary - Selfie del cliente'
+        },
+        fotoEntrega: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            field: 'foto_entrega',
+            comment: 'URL de Cloudinary - Foto de entrega del equipo'
+        },
+        fotoEquipo: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            field: 'foto_equipo',
+            comment: 'URL de Cloudinary - Foto del equipo con IMEI visible'
+        },
+        
+        // ⭐ CAMPOS DE VERIFICACIÓN FACIAL
+        verificacionFacial: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            field: 'verificacion_facial',
+            comment: 'Porcentaje de coincidencia facial (0-100)'
+        },
+        verificadoEl: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            field: 'verificado_el',
+            comment: 'Fecha y hora de la verificación facial'
+        },
+        estadoVerificacion: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            field: 'estado_verificacion',
+            defaultValue: 'pendiente',
+            comment: 'pendiente, verificado, rechazado'
         }
     }, {
-        tableName: 'clients', // ⭐ Corregido para tu SQLite
+        tableName: 'clients',
         timestamps: true,
         hooks: {
             beforeCreate: async (client) => {
