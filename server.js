@@ -1,4 +1,4 @@
-// server.js - CON RUTAS DE DOCUMENTOS DE CLIENTE
+// server.js - CON INTEGRACIÓN MDM PARA BLOQUEO AUTOMÁTICO
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -49,12 +49,10 @@ sequelize.authenticate()
 
     // ⭐ CREAR TABLA COLLECTION_LOGS SIN FOREIGN KEYS
     try {
-      console.log('🔄 Creando tabla collection_logs...');
+      console.log('🔄 Verificando tabla collection_logs...');
       
       await sequelize.query(`
-        DROP TABLE IF EXISTS collection_logs CASCADE;
-        
-        CREATE TABLE collection_logs (
+        CREATE TABLE IF NOT EXISTS collection_logs (
           id SERIAL PRIMARY KEY,
           sale_id INTEGER NOT NULL,
           collector_id INTEGER NOT NULL,
@@ -66,14 +64,55 @@ sequelize.authenticate()
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
-        CREATE INDEX idx_collection_logs_sale ON collection_logs(sale_id);
-        CREATE INDEX idx_collection_logs_collector ON collection_logs(collector_id);
-        CREATE INDEX idx_collection_logs_created ON collection_logs(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_collection_logs_sale ON collection_logs(sale_id);
+        CREATE INDEX IF NOT EXISTS idx_collection_logs_collector ON collection_logs(collector_id);
+        CREATE INDEX IF NOT EXISTS idx_collection_logs_created ON collection_logs(created_at DESC);
       `);
       
-      console.log('✅ Tabla collection_logs creada exitosamente');
+      console.log('✅ Tabla collection_logs verificada');
     } catch (e) {
-      console.error('❌ Error al crear tabla:', e.message);
+      console.error('❌ Error con tabla collection_logs:', e.message);
+    }
+
+    // ⭐ MDM: CREAR TABLA DEVICES_MDM
+    try {
+      console.log('🔄 Verificando tabla devices_mdm...');
+      
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS devices_mdm (
+          id SERIAL PRIMARY KEY,
+          device_number VARCHAR(100) NOT NULL,
+          imei VARCHAR(20),
+          serial_number VARCHAR(50),
+          brand VARCHAR(50),
+          model VARCHAR(100),
+          sale_id INTEGER,
+          client_id INTEGER,
+          status VARCHAR(20) DEFAULT 'active',
+          last_locked_at TIMESTAMP,
+          last_unlocked_at TIMESTAMP,
+          lock_reason VARCHAR(255),
+          mdm_configuration_id INTEGER,
+          last_latitude DECIMAL(10, 8),
+          last_longitude DECIMAL(11, 8),
+          last_location_at TIMESTAMP,
+          notes TEXT,
+          tienda_id INTEGER NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_device_number ON devices_mdm(device_number);
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_imei ON devices_mdm(imei);
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_sale ON devices_mdm(sale_id);
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_client ON devices_mdm(client_id);
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_tienda ON devices_mdm(tienda_id);
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_status ON devices_mdm(status);
+      `);
+      
+      console.log('✅ Tabla devices_mdm verificada');
+    } catch (e) {
+      console.error('❌ Error con tabla devices_mdm:', e.message);
     }
 
     // CORS - DEBE IR PRIMERO
@@ -125,7 +164,7 @@ sequelize.authenticate()
     const initClientRoutes = require('./routes/clientRoutes');
     app.use('/api/clients', authMiddleware, initClientRoutes(models));
 
-    // ⭐ NUEVO: Rutas de documentos de cliente (INE, selfie, verificación facial)
+    // Rutas de documentos de cliente (INE, selfie, verificación facial)
     const initClientDocumentsRoutes = require('./routes/clientDocumentsRoutes');
     app.use('/api/clients', authMiddleware, initClientDocumentsRoutes(models));
 
@@ -152,6 +191,27 @@ sequelize.authenticate()
 
     const initCollectionRoutes = require('./routes/collectionRoutes');
     app.use('/api/collections', authMiddleware, initCollectionRoutes(models, sequelize));
+
+    // =========================================================
+    // ⭐ RUTAS MDM - BLOQUEO DE DISPOSITIVOS
+    // =========================================================
+    const initMdmRoutes = require('./routes/mdmRoutes');
+    app.use('/api/mdm', authMiddleware, initMdmRoutes(models));
+
+    const initMdmAutoBlockRoutes = require('./routes/mdmAutoBlockRoutes');
+    app.use('/api/mdm-auto', authMiddleware, initMdmAutoBlockRoutes(models));
+
+    console.log('✅ Rutas MDM montadas.');
+
+    // =========================================================
+    // ⭐ CRON JOB MDM - VERIFICACIÓN AUTOMÁTICA (OPCIONAL)
+    // =========================================================
+    // Descomenta las siguientes líneas para activar el bloqueo automático
+    // El cron verifica cada hora y bloquea dispositivos con 2+ días de mora
+    
+    // const { startCronJob } = require('./cron/mdmCronJob');
+    // startCronJob(3600000); // Verificar cada hora (3600000 ms)
+    // console.log('✅ Cron job MDM iniciado (verificación cada hora).');
 
     console.log('✅ Todas las rutas principales han sido montadas.');
     app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
