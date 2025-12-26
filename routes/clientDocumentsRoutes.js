@@ -27,6 +27,15 @@ const initClientDocumentsRoutes = (models) => {
     Client = models.Client;
     AuditLog = models.AuditLog;
 
+    // ⭐ CONFIGURAR CLOUDINARY AQUÍ DENTRO
+    cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET
+    });
+
+    console.log('☁️ Cloudinary configurado:', process.env.CLOUDINARY_CLOUD_NAME ? 'OK' : 'FALTAN VARIABLES');
+
     // Subir documento específico
     router.post('/:clientId/documents/:docType',
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']),
