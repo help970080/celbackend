@@ -12,7 +12,8 @@ function initMdmAdminRoutes(models) {
 
     // Middleware: Solo Super Admin
     const superAdminOnly = (req, res, next) => {
-        if (req.user?.role !== 'superadmin') {
+        const role = req.user?.role;
+        if (role !== 'superadmin' && role !== 'super_admin') {
             return res.status(403).json({ success: false, message: 'Acceso denegado. Solo Super Admin.' });
         }
         next();
