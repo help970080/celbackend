@@ -1,4 +1,4 @@
-// models/index.js - CON INTEGRACIÓN MDM
+// models/index.js - CON INTEGRACIÓN MDM COMPLETA
 
 const UserModel = require('./User');
 const ClientModel = require('./Client');
@@ -9,7 +9,8 @@ const SaleItemModel = require('./SaleItem');
 const AuditLogModel = require('./AuditLog');
 const StoreModel = require('./Store');
 const CollectionLogModel = require('./CollectionLog');
-const DeviceMdmModel = require('./DeviceMdm'); // ⭐ MDM AGREGADO
+const DeviceMdmModel = require('./DeviceMdm');
+const MdmAccountModel = require('./MdmAccount'); // ⭐ NUEVO
 
 module.exports = (sequelize) => {
     const User = UserModel(sequelize);
@@ -21,7 +22,8 @@ module.exports = (sequelize) => {
     const AuditLog = AuditLogModel(sequelize);
     const Store = StoreModel(sequelize);
     const CollectionLog = CollectionLogModel(sequelize);
-    const DeviceMdm = DeviceMdmModel(sequelize); // ⭐ MDM AGREGADO
+    const DeviceMdm = DeviceMdmModel(sequelize);
+    const MdmAccount = MdmAccountModel(sequelize); // ⭐ NUEVO
 
     // =========================================================
     // ASOCIACIONES CON STORE (Multi-Tenant)
@@ -44,9 +46,13 @@ module.exports = (sequelize) => {
     Store.hasMany(AuditLog, { foreignKey: 'tienda_id', as: 'auditLogs' });
     AuditLog.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    // ⭐ MDM - Asociación con Store (Multi-Tenant)
+    // MDM - Asociación con Store (Multi-Tenant)
     Store.hasMany(DeviceMdm, { foreignKey: 'tienda_id', as: 'devices' });
     DeviceMdm.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
+
+    // ⭐ MdmAccount - Asociación con Store (opcional)
+    Store.hasMany(MdmAccount, { foreignKey: 'tienda_id', as: 'mdmAccounts' });
+    MdmAccount.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
     // =========================================================
     // ASOCIACIONES DE VENTAS Y CLIENTES
@@ -100,9 +106,8 @@ module.exports = (sequelize) => {
     });
 
     // =========================================================
-    // ⭐ ASOCIACIONES DE DEVICE MDM (BLOQUEO DE DISPOSITIVOS)
+    // ASOCIACIONES DE DEVICE MDM (BLOQUEO DE DISPOSITIVOS)
     // =========================================================
-    // Relación Sale -> DeviceMdm (una venta tiene un dispositivo)
     Sale.hasOne(DeviceMdm, { 
         foreignKey: 'sale_id', 
         as: 'device' 
@@ -112,7 +117,6 @@ module.exports = (sequelize) => {
         as: 'sale' 
     });
 
-    // Relación Client -> DeviceMdm (un cliente puede tener varios dispositivos)
     Client.hasMany(DeviceMdm, { 
         foreignKey: 'client_id', 
         as: 'devices' 
@@ -120,6 +124,16 @@ module.exports = (sequelize) => {
     DeviceMdm.belongsTo(Client, { 
         foreignKey: 'client_id', 
         as: 'client' 
+    });
+
+    // ⭐ DeviceMdm - Asociación con MdmAccount (qué cuenta lo gestiona)
+    MdmAccount.hasMany(DeviceMdm, { 
+        foreignKey: 'mdm_account_id', 
+        as: 'devices' 
+    });
+    DeviceMdm.belongsTo(MdmAccount, { 
+        foreignKey: 'mdm_account_id', 
+        as: 'mdmAccount' 
     });
 
     // =========================================================
@@ -135,6 +149,7 @@ module.exports = (sequelize) => {
         AuditLog, 
         Store,
         CollectionLog,
-        DeviceMdm // ⭐ MDM AGREGADO
+        DeviceMdm,
+        MdmAccount // ⭐ NUEVO
     };
 };

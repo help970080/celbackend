@@ -1,4 +1,4 @@
-// server.js - CON INTEGRACIÓN MDM PARA BLOQUEO AUTOMÁTICO
+// server.js - CON INTEGRACIÓN MDM COMPLETA Y PANEL ADMIN
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -93,6 +93,7 @@ sequelize.authenticate()
           last_unlocked_at TIMESTAMP,
           lock_reason VARCHAR(255),
           mdm_configuration_id INTEGER,
+          mdm_account_id INTEGER,
           last_latitude DECIMAL(10, 8),
           last_longitude DECIMAL(11, 8),
           last_location_at TIMESTAMP,
@@ -108,11 +109,46 @@ sequelize.authenticate()
         CREATE INDEX IF NOT EXISTS idx_devices_mdm_client ON devices_mdm(client_id);
         CREATE INDEX IF NOT EXISTS idx_devices_mdm_tienda ON devices_mdm(tienda_id);
         CREATE INDEX IF NOT EXISTS idx_devices_mdm_status ON devices_mdm(status);
+        CREATE INDEX IF NOT EXISTS idx_devices_mdm_account ON devices_mdm(mdm_account_id);
       `);
       
       console.log('✅ Tabla devices_mdm verificada');
     } catch (e) {
       console.error('❌ Error con tabla devices_mdm:', e.message);
+    }
+
+    // ⭐ MDM: CREAR TABLA MDM_ACCOUNTS (PANEL ADMIN)
+    try {
+      console.log('🔄 Verificando tabla mdm_accounts...');
+      
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS mdm_accounts (
+          id SERIAL PRIMARY KEY,
+          nombre VARCHAR(100) NOT NULL,
+          email VARCHAR(150),
+          client_id TEXT NOT NULL,
+          client_secret TEXT NOT NULL,
+          refresh_token TEXT NOT NULL,
+          access_token TEXT,
+          token_expires_at TIMESTAMP,
+          tienda_id INTEGER,
+          activo BOOLEAN DEFAULT true,
+          last_status VARCHAR(50),
+          last_checked_at TIMESTAMP,
+          device_count INTEGER DEFAULT 0,
+          notas TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_mdm_accounts_tienda ON mdm_accounts(tienda_id);
+        CREATE INDEX IF NOT EXISTS idx_mdm_accounts_activo ON mdm_accounts(activo);
+        CREATE INDEX IF NOT EXISTS idx_mdm_accounts_nombre ON mdm_accounts(nombre);
+      `);
+      
+      console.log('✅ Tabla mdm_accounts verificada');
+    } catch (e) {
+      console.error('❌ Error con tabla mdm_accounts:', e.message);
     }
 
     // CORS - DEBE IR PRIMERO
@@ -195,13 +231,17 @@ sequelize.authenticate()
     // =========================================================
     // ⭐ RUTAS MDM - BLOQUEO DE DISPOSITIVOS
     // =========================================================
-    const initMdmRoutes = require('./routes/mdmRoutes');
+    const initMdmRoutes = require('./services/mdmRoutes');
     app.use('/api/mdm', authMiddleware, initMdmRoutes(models));
 
-    const initMdmAutoBlockRoutes = require('./routes/mdmAutoBlockRoutes');
+    const initMdmAutoBlockRoutes = require('./services/mdmAutoBlockRoutes');
     app.use('/api/mdm-auto', authMiddleware, initMdmAutoBlockRoutes(models));
 
-    console.log('✅ Rutas MDM montadas.');
+    // ⭐ RUTAS MDM ADMIN - PANEL DE CUENTAS (Solo Super Admin)
+    const initMdmAdminRoutes = require('./services/mdmAdminRoutes');
+    app.use('/api/mdm-admin', authMiddleware, initMdmAdminRoutes(models));
+
+    console.log('✅ Rutas MDM montadas (operativas + admin).');
 
     // =========================================================
     // ⭐ CRON JOB MDM - VERIFICACIÓN AUTOMÁTICA (OPCIONAL)
