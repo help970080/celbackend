@@ -117,6 +117,17 @@ sequelize.authenticate()
       console.error('❌ Error con tabla devices_mdm:', e.message);
     }
 
+    // ⭐ FIX: Agregar columna mdm_account_id si no existe
+    try {
+      await sequelize.query(`
+        ALTER TABLE devices_mdm 
+        ADD COLUMN IF NOT EXISTS mdm_account_id INTEGER;
+      `);
+      console.log('✅ Columna mdm_account_id verificada');
+    } catch (e) {
+      // Ignorar si ya existe
+    }
+
     // ⭐ MDM: CREAR TABLA MDM_ACCOUNTS (PANEL ADMIN)
     try {
       console.log('🔄 Verificando tabla mdm_accounts...');
