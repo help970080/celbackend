@@ -255,14 +255,11 @@ sequelize.authenticate()
     console.log('✅ Rutas MDM montadas (operativas + admin).');
 
     // =========================================================
-    // ⭐ CRON JOB MDM - VERIFICACIÓN AUTOMÁTICA (OPCIONAL)
+    // ⭐ CRON JOB MDM - BLOQUEO AUTOMÁTICO ACTIVADO
     // =========================================================
-    // Descomenta las siguientes líneas para activar el bloqueo automático
-    // El cron verifica cada hora y bloquea dispositivos con 2+ días de mora
-    
-    // const { startCronJob } = require('./cron/mdmCronJob');
-    // startCronJob(3600000); // Verificar cada hora (3600000 ms)
-    // console.log('✅ Cron job MDM iniciado (verificación cada hora).');
+    const { startCronJob } = require('./cron/mdmCronJob');
+    startCronJob(3600000); // Verificar cada hora (3600000 ms = 1 hora)
+    console.log('✅ Cron job MDM iniciado (verificación cada hora).');
 
     console.log('✅ Todas las rutas principales han sido montadas.');
     app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
