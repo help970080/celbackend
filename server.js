@@ -258,7 +258,7 @@ sequelize.authenticate()
     // ⭐ CRON JOB MDM - BLOQUEO AUTOMÁTICO ACTIVADO
     // =========================================================
     const { startCronJob } = require('./cron/mdmCronJob');
-    startCronJob(3600000); // Verificar cada hora (3600000 ms = 1 hora)
+    startCronJob(models, 3600000); // Pasar models y verificar cada hora
     console.log('✅ Cron job MDM iniciado (verificación cada hora).');
 
     console.log('✅ Todas las rutas principales han sido montadas.');

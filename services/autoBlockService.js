@@ -1,5 +1,6 @@
 /**
  * Auto-bloqueo MDM - Lee cuentas desde BD
+ * CORREGIDO: Usa nombres de campos correctos del modelo Sale
  */
 
 const mdmService = require('./mdmService');
@@ -11,15 +12,16 @@ function calculateDaysLate(sale) {
 
     const payments = sale.payments || [];
     const lastPayment = payments.length > 0
-        ? payments.sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0]
+        ? payments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0]
         : null;
 
-    const lastPaymentDate = lastPayment ? new Date(lastPayment.fecha) : new Date(sale.fecha);
+    const lastPaymentDate = lastPayment ? new Date(lastPayment.createdAt) : new Date(sale.saleDate);
 
-    const frequency = sale.frecuenciaPago || 'semanal';
+    const frequency = sale.paymentFrequency || 'weekly';
     let daysToAdd = 7;
-    if (frequency === 'quincenal') daysToAdd = 15;
-    if (frequency === 'mensual') daysToAdd = 30;
+    if (frequency === 'fortnightly') daysToAdd = 15;
+    if (frequency === 'monthly') daysToAdd = 30;
+    if (frequency === 'daily') daysToAdd = 1;
 
     const dueDate = new Date(lastPaymentDate);
     dueDate.setDate(dueDate.getDate() + daysToAdd);
@@ -35,8 +37,13 @@ async function processAutoBlocks(models, options = {}) {
     const results = { processed: 0, blocked: 0, errors: [] };
 
     try {
+        // Buscar ventas a crédito activas con dispositivo vinculado
         const sales = await Sale.findAll({
-            where: { tipoVenta: 'credito', estatus: 'activa', ...options.storeFilter },
+            where: { 
+                isCredit: true, 
+                status: ['active', 'pending', 'pending_credit'],
+                ...options.storeFilter 
+            },
             include: [
                 { model: Payment, as: 'payments' },
                 { model: Client, as: 'client' },
@@ -49,12 +56,14 @@ async function processAutoBlocks(models, options = {}) {
         for (const sale of sales) {
             results.processed++;
             try {
+                // Si ya está bloqueado, saltar
                 if (sale.device.status === 'locked') continue;
 
                 const daysLate = calculateDaysLate(sale);
 
                 if (daysLate >= daysToBlock) {
-                    console.log(`🔒 Bloqueando ${sale.client?.nombre} - ${daysLate} días de atraso`);
+                    const clientName = sale.client ? `${sale.client.name} ${sale.client.lastName || ''}`.trim() : 'Sin nombre';
+                    console.log(`🔒 Bloqueando ${clientName} - ${daysLate} días de atraso`);
 
                     await mdmService.lockDeviceByImei(
                         MdmAccount,
@@ -65,28 +74,30 @@ async function processAutoBlocks(models, options = {}) {
 
                     await sale.device.update({
                         status: 'locked',
-                        lastLockedAt: new Date(),
-                        lockReason: `Auto-bloqueo: ${daysLate} días de atraso`
+                        last_locked_at: new Date(),
+                        lock_reason: `Auto-bloqueo: ${daysLate} días de atraso`
                     });
 
                     if (AuditLog) {
                         await AuditLog.create({
                             tabla: 'devices_mdm',
-                            accion: 'BLOQUEO AUTOMÁTICO',
-                            descripcion: `IMEI ${sale.device.imei} bloqueado. Cliente: ${sale.client?.nombre}. Atraso: ${daysLate} días`,
-                            tiendaId: sale.tiendaId
+                            accion: 'BLOQUEO AUTOMATICO',
+                            descripcion: `IMEI ${sale.device.imei} bloqueado. Cliente: ${clientName}. Atraso: ${daysLate} días`,
+                            tienda_id: sale.tiendaId
                         });
                     }
 
                     results.blocked++;
                 }
             } catch (error) {
+                console.error(`Error procesando venta ${sale.id}:`, error.message);
                 results.errors.push({ saleId: sale.id, error: error.message });
             }
         }
 
         console.log(`✅ Auto-bloqueo: ${results.blocked} dispositivos bloqueados`);
     } catch (error) {
+        console.error('Error general en auto-bloqueo:', error.message);
         results.errors.push({ general: error.message });
     }
 
@@ -100,8 +111,12 @@ async function processAutoUnblocks(models, options = {}) {
     const results = { processed: 0, unblocked: 0, errors: [] };
 
     try {
+        // Buscar ventas con dispositivo bloqueado
         const sales = await Sale.findAll({
-            where: { tipoVenta: 'credito', estatus: 'activa', ...options.storeFilter },
+            where: { 
+                isCredit: true,
+                ...options.storeFilter 
+            },
             include: [
                 { model: Payment, as: 'payments' },
                 { model: Client, as: 'client' },
@@ -115,36 +130,41 @@ async function processAutoUnblocks(models, options = {}) {
             results.processed++;
             try {
                 const daysLate = calculateDaysLate(sale);
+                const isPaidOff = sale.balanceDue <= 0 || sale.status === 'completed';
 
-                if (daysLate < daysToBlock || sale.saldoPendiente <= 0) {
-                    console.log(`🔓 Desbloqueando ${sale.client?.nombre}`);
+                // Desbloquear si ya no tiene atraso o si pagó todo
+                if (daysLate < daysToBlock || isPaidOff) {
+                    const clientName = sale.client ? `${sale.client.name} ${sale.client.lastName || ''}`.trim() : 'Sin nombre';
+                    console.log(`🔓 Desbloqueando ${clientName}`);
 
                     await mdmService.unlockDeviceByImei(MdmAccount, sale.device.imei);
 
                     await sale.device.update({
                         status: 'active',
-                        lastUnlockedAt: new Date(),
-                        lockReason: null
+                        last_unlocked_at: new Date(),
+                        lock_reason: null
                     });
 
                     if (AuditLog) {
                         await AuditLog.create({
                             tabla: 'devices_mdm',
-                            accion: 'DESBLOQUEO AUTOMÁTICO',
-                            descripcion: `IMEI ${sale.device.imei} desbloqueado. Cliente: ${sale.client?.nombre}`,
-                            tiendaId: sale.tiendaId
+                            accion: 'DESBLOQUEO AUTOMATICO',
+                            descripcion: `IMEI ${sale.device.imei} desbloqueado. Cliente: ${clientName}`,
+                            tienda_id: sale.tiendaId
                         });
                     }
 
                     results.unblocked++;
                 }
             } catch (error) {
+                console.error(`Error desbloqueando venta ${sale.id}:`, error.message);
                 results.errors.push({ saleId: sale.id, error: error.message });
             }
         }
 
         console.log(`✅ Auto-desbloqueo: ${results.unblocked} dispositivos desbloqueados`);
     } catch (error) {
+        console.error('Error general en auto-desbloqueo:', error.message);
         results.errors.push({ general: error.message });
     }
 
@@ -162,7 +182,7 @@ async function runFullCycle(models, options = {}) {
 // Estadísticas
 async function getStats(models, options = {}) {
     const { DeviceMdm } = models;
-    const where = options.storeFilter?.tienda_id ? { tiendaId: options.storeFilter.tienda_id } : {};
+    const where = options.storeFilter?.tienda_id ? { tienda_id: options.storeFilter.tienda_id } : {};
 
     return {
         total: await DeviceMdm.count({ where }),
