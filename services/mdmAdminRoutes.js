@@ -27,7 +27,7 @@ function initMdmAdminRoutes(models) {
     router.get('/accounts', async (req, res) => {
         try {
             const accounts = await MdmAccount.findAll({
-                include: [{ model: Store, as: 'store', attributes: ['id', 'nombre'] }],
+                include: [{ model: Store, as: 'store', attributes: ['id', 'name'] }],
                 order: [['id', 'ASC']]
             });
 
@@ -38,7 +38,7 @@ function initMdmAdminRoutes(models) {
                 email: acc.email,
                 clientId: acc.clientId ? `${acc.clientId.substring(0, 15)}...` : null,
                 tiendaId: acc.tiendaId,
-                tiendaNombre: acc.store?.nombre,
+                tiendaNombre: acc.store?.name,
                 activo: acc.activo,
                 lastStatus: acc.lastStatus,
                 lastCheckedAt: acc.lastCheckedAt,
@@ -49,6 +49,7 @@ function initMdmAdminRoutes(models) {
 
             res.json({ success: true, accounts: safeAccounts });
         } catch (error) {
+            console.error('Error en GET /accounts:', error);
             res.status(500).json({ success: false, error: error.message });
         }
     });
@@ -113,7 +114,7 @@ function initMdmAdminRoutes(models) {
     router.get('/accounts/:id', async (req, res) => {
         try {
             const account = await MdmAccount.findByPk(req.params.id, {
-                include: [{ model: Store, as: 'store', attributes: ['id', 'nombre'] }]
+                include: [{ model: Store, as: 'store', attributes: ['id', 'name'] }]
             });
 
             if (!account) {
@@ -130,7 +131,7 @@ function initMdmAdminRoutes(models) {
                     hasClientSecret: !!account.clientSecret,
                     hasRefreshToken: !!account.refreshToken,
                     tiendaId: account.tiendaId,
-                    tiendaNombre: account.store?.nombre,
+                    tiendaNombre: account.store?.name,
                     activo: account.activo,
                     lastStatus: account.lastStatus,
                     lastCheckedAt: account.lastCheckedAt,
@@ -312,11 +313,17 @@ function initMdmAdminRoutes(models) {
     router.get('/stores', async (req, res) => {
         try {
             const stores = await Store.findAll({
-                attributes: ['id', 'nombre'],
-                order: [['nombre', 'ASC']]
+                attributes: ['id', 'name'],
+                order: [['name', 'ASC']]
             });
 
-            res.json({ success: true, stores });
+            // Mapear 'name' a 'nombre' para el frontend
+            const storesFormatted = stores.map(s => ({
+                id: s.id,
+                nombre: s.name
+            }));
+
+            res.json({ success: true, stores: storesFormatted });
         } catch (error) {
             res.status(500).json({ success: false, error: error.message });
         }

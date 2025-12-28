@@ -1,0 +1,315 @@
+================================================================================
+GUÍA COMPLETA: CONFIGURACIÓN MDM MANAGEENGINE PARA CELEXPRESS
+================================================================================
+
+ÍNDICE:
+1. Crear cuenta en ManageEngine
+2. Enrollar dispositivos
+3. Generar credenciales API (OAuth)
+4. Comandos PowerShell para pruebas
+5. Agregar cuenta en CelExpress
+6. Flujo de uso diario
+
+================================================================================
+1. CREAR CUENTA EN MANAGEENGINE
+================================================================================
+
+1. Ve a: https://www.manageengine.com/mobile-device-management/
+2. Click en "Get Started Free" o "Free Trial"
+3. Registra una cuenta con email (puedes usar Gmail)
+4. Confirma el email
+5. Accede al panel: https://mdm.manageengine.com
+
+NOTA: Cada cuenta gratuita permite hasta 25 dispositivos.
+      Si necesitas más, crea cuentas adicionales con otros emails.
+
+================================================================================
+2. ENROLLAR DISPOSITIVOS
+================================================================================
+
+Para que un teléfono pueda ser bloqueado/desbloqueado, debe estar "enrollado" 
+en ManageEngine.
+
+PASOS:
+1. En el panel de ManageEngine, ve a "Enrollment" o "Inscripción"
+2. Selecciona "Android" 
+3. Elige el método de enrollment (QR Code es el más fácil)
+4. Genera el código QR
+5. En el teléfono a enrollar:
+   - Ve a Configuración > Seguridad > Administradores de dispositivo
+   - O descarga la app "ME MDM" desde Play Store
+   - Escanea el código QR
+6. Acepta los permisos
+7. El dispositivo aparecerá en la lista de ManageEngine
+
+IMPORTANTE: El dispositivo debe tener conexión a internet para recibir comandos.
+
+================================================================================
+3. GENERAR CREDENCIALES API (OAuth)
+================================================================================
+
+Necesitas 3 datos para conectar CelExpress con ManageEngine:
+- Client ID
+- Client Secret
+- Refresh Token
+
+PASO 3.1: Ir a la consola de API de Zoho
+-------------------------------------------
+1. Ve a: https://api-console.zoho.com
+2. Inicia sesión con la MISMA cuenta de ManageEngine
+
+PASO 3.2: Crear Self Client (solo la primera vez)
+-------------------------------------------
+1. Click en "Get Started" o "Add Client"
+2. Selecciona "Self Client"
+3. Click en "Create"
+4. Verás tu Client ID y Client Secret - GUÁRDALOS
+
+PASO 3.3: Generar Authorization Code
+-------------------------------------------
+1. En la misma página, click en "Generate Code"
+2. En el campo "Scope", escribe EXACTAMENTE esto (todo en una línea):
+
+MDMOnDemand.MDMDeviceMgmt.CREATE,MDMOnDemand.MDMDeviceMgmt.UPDATE,MDMOnDemand.MDMDeviceMgmt.DELETE,MDMOnDemand.MDMDeviceMgmt.READ,MDMOnDemand.MDMInventory.READ,MDMOnDemand.MDMInventory.CREATE,MDMOnDemand.MDMInventory.UPDATE
+
+3. En "Time Duration", selecciona "10 minutes"
+4. En "Scope Description", escribe algo como "CelExpress MDM"
+5. Click en "Create"
+6. COPIA EL CÓDIGO que aparece (expira en 10 minutos)
+
+PASO 3.4: Convertir código en Refresh Token (PowerShell)
+-------------------------------------------
+Abre PowerShell y ejecuta (reemplaza los valores):
+
+$code = "TU_CODIGO_GENERADO"
+$clientId = "TU_CLIENT_ID"
+$clientSecret = "TU_CLIENT_SECRET"
+
+Invoke-WebRequest -Uri "https://accounts.zoho.com/oauth/v2/token" -Method POST -Body @{
+    code=$code
+    client_id=$clientId
+    client_secret=$clientSecret
+    grant_type="authorization_code"
+}
+
+La respuesta incluirá:
+- access_token (temporal, dura ~1 hora)
+- refresh_token (PERMANENTE - este es el que necesitas guardar)
+
+EJEMPLO DE RESPUESTA:
+{
+    "access_token": "1000.xxxx...",
+    "refresh_token": "1000.yyyy...",   <-- GUARDA ESTE
+    "expires_in": 3600
+}
+
+================================================================================
+4. COMANDOS POWERSHELL PARA PRUEBAS
+================================================================================
+
+Una vez que tengas las credenciales, puedes probar desde PowerShell:
+
+------------------------------------------
+4.1 OBTENER ACCESS TOKEN (cada vez que expire)
+------------------------------------------
+
+$refreshToken = "TU_REFRESH_TOKEN"
+$clientId = "TU_CLIENT_ID"
+$clientSecret = "TU_CLIENT_SECRET"
+
+$tokenResponse = Invoke-WebRequest -Uri "https://accounts.zoho.com/oauth/v2/token" -Method POST -Body @{
+    refresh_token=$refreshToken
+    client_id=$clientId
+    client_secret=$clientSecret
+    grant_type="refresh_token"
+} | ConvertFrom-Json
+
+$token = $tokenResponse.access_token
+Write-Host "Token obtenido: $token"
+
+------------------------------------------
+4.2 VER TODOS LOS DISPOSITIVOS
+------------------------------------------
+
+$response = Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices" -Headers @{
+    Authorization="Zoho-oauthtoken $token"
+}
+$response.Content | ConvertFrom-Json | Select-Object -ExpandProperty devices | Format-Table device_id, device_name, model, imei
+
+------------------------------------------
+4.3 BUSCAR DISPOSITIVO POR IMEI
+------------------------------------------
+
+$imei = "860734072994372"  # Cambia por el IMEI real
+
+$devices = (Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices" -Headers @{
+    Authorization="Zoho-oauthtoken $token"
+} | ConvertFrom-Json).devices
+
+$device = $devices | Where-Object { $_.imei -contains $imei }
+Write-Host "Device ID: $($device.device_id)"
+Write-Host "Nombre: $($device.device_name)"
+Write-Host "Modelo: $($device.model)"
+
+------------------------------------------
+4.4 BLOQUEAR DISPOSITIVO (LOST MODE)
+------------------------------------------
+
+$deviceId = "177686000000376251"  # El device_id del dispositivo
+
+Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices/$deviceId/actions/enable_lost_mode" -Method POST -Headers @{
+    Authorization="Zoho-oauthtoken $token"
+    "Content-Type"="application/json"
+} -Body '{"lock_message":"Pago vencido. Contacte CelExpress.","phone_number":"5555555555"}'
+
+# Si responde 202 = Comando enviado exitosamente
+
+------------------------------------------
+4.5 DESBLOQUEAR DISPOSITIVO
+------------------------------------------
+
+$deviceId = "177686000000376251"
+
+Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices/$deviceId/actions/disable_lost_mode" -Method POST -Headers @{
+    Authorization="Zoho-oauthtoken $token"
+    "Content-Type"="application/json"
+} -Body '{}'
+
+------------------------------------------
+4.6 SONAR ALARMA REMOTA
+------------------------------------------
+
+$deviceId = "177686000000376251"
+
+Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices/$deviceId/actions/remote_alarm" -Method POST -Headers @{
+    Authorization="Zoho-oauthtoken $token"
+    "Content-Type"="application/json"
+} -Body '{}'
+
+------------------------------------------
+4.7 SCRIPT COMPLETO: BLOQUEAR POR IMEI
+------------------------------------------
+
+# Configuración
+$refreshToken = "1000.686da5cd56c356963ce7bf560f4af4bf.6f81098495f345e34343f6c6c855b5dc"
+$clientId = "1000.TXZALWT2HB47MREBMR6LFH7IAO5J2X"
+$clientSecret = "03a94e02e3cdd62b32513010547e648232263586a0"
+$imeiToBlock = "860734072994372"
+
+# Obtener token
+$token = (Invoke-WebRequest -Uri "https://accounts.zoho.com/oauth/v2/token" -Method POST -Body @{
+    refresh_token=$refreshToken
+    client_id=$clientId
+    client_secret=$clientSecret
+    grant_type="refresh_token"
+} | ConvertFrom-Json).access_token
+
+# Buscar dispositivo
+$devices = (Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices" -Headers @{
+    Authorization="Zoho-oauthtoken $token"
+} | ConvertFrom-Json).devices
+
+$device = $devices | Where-Object { $_.imei -contains $imeiToBlock }
+
+if ($device) {
+    Write-Host "Bloqueando dispositivo: $($device.device_name)"
+    
+    Invoke-WebRequest -Uri "https://mdm.manageengine.com/api/v1/mdm/devices/$($device.device_id)/actions/enable_lost_mode" -Method POST -Headers @{
+        Authorization="Zoho-oauthtoken $token"
+        "Content-Type"="application/json"
+    } -Body '{"lock_message":"Pago vencido. Contacte CelExpress.","phone_number":"5555555555"}'
+    
+    Write-Host "Dispositivo bloqueado!"
+} else {
+    Write-Host "IMEI no encontrado"
+}
+
+================================================================================
+5. AGREGAR CUENTA EN CELEXPRESS
+================================================================================
+
+1. Inicia sesión en CelExpress como super_admin
+2. Ve al menú "🔐 MDM"
+3. Click en "+ Nueva Cuenta"
+4. Llena los campos:
+   - Nombre: Un nombre descriptivo (ej: "Cuenta Tienda 1")
+   - Client ID: El que obtuviste de Zoho API Console
+   - Client Secret: El que obtuviste de Zoho API Console
+   - Refresh Token: El que obtuviste con PowerShell
+5. Click en "Crear Cuenta"
+6. Click en "🔌 Probar" para verificar que funciona
+7. Si dice "✓ Conectada" y muestra dispositivos, ¡está listo!
+
+================================================================================
+6. FLUJO DE USO DIARIO
+================================================================================
+
+ENROLLAR NUEVO TELÉFONO:
+1. En ManageEngine, genera código QR de enrollment
+2. En el teléfono nuevo, escanea el QR
+3. Espera a que aparezca en la lista de dispositivos
+4. Anota el IMEI del teléfono
+
+REGISTRAR VENTA A CRÉDITO:
+1. En CelExpress, ve a "Gestión Ventas"
+2. Click en "+ Registrar Nueva Venta"
+3. Selecciona cliente y producto
+4. Marca "Venta a Crédito"
+5. Llena enganche, frecuencia, número de pagos
+6. En "IMEI del Dispositivo", ingresa el IMEI
+7. Click en "Verificar" para confirmar que el IMEI existe en MDM
+8. Si aparece ✓ Verificado, click en "Registrar Venta"
+9. El dispositivo queda vinculado y se bloqueará automáticamente si no paga
+
+BLOQUEO AUTOMÁTICO:
+- El sistema verifica pagos periódicamente
+- Si un cliente tiene 2+ días de atraso, el teléfono se bloquea automáticamente
+- El cliente ve un mensaje: "Pago vencido. Contacte CelExpress."
+- Cuando el cliente paga, el teléfono se desbloquea automáticamente
+
+BLOQUEO MANUAL (desde el panel):
+1. Ve a "🔐 MDM"
+2. Click en "📱 Ver" en la cuenta
+3. Busca el dispositivo
+4. Usa los botones para bloquear/desbloquear/alarma
+
+================================================================================
+CREDENCIALES ACTUALES (CUENTA PRINCIPAL)
+================================================================================
+
+Client ID:     1000.TXZALWT2HB47MREBMR6LFH7IAO5J2X
+Client Secret: 03a94e02e3cdd62b32513010547e648232263586a0
+Refresh Token: 1000.686da5cd56c356963ce7bf560f4af4bf.6f81098495f345e34343f6c6c855b5dc
+
+NOTA: Estas credenciales ya están configuradas en CelExpress.
+      Guarda este documento como respaldo.
+
+================================================================================
+SOLUCIÓN DE PROBLEMAS
+================================================================================
+
+ERROR: "Unauthorized" o "No tienes permisos"
+- El scope no incluye los permisos necesarios
+- Genera un nuevo código con el scope completo
+
+ERROR: "Invalid refresh token"
+- El refresh token expiró o se regeneró
+- Genera nuevas credenciales desde el paso 3.3
+
+ERROR: "Device not found"
+- El dispositivo no está enrollado en ManageEngine
+- Verifica que el IMEI sea correcto (15 dígitos)
+
+ERROR: "Token expired"  
+- El access token expiró (dura ~1 hora)
+- El sistema lo renueva automáticamente
+- Si persiste, verifica el refresh token
+
+EL DISPOSITIVO NO SE BLOQUEA:
+- Verifica que tenga conexión a internet
+- Verifica que esté enrollado correctamente
+- Revisa en ManageEngine si el comando está en cola
+
+================================================================================
+FIN DE LA GUÍA
+================================================================================
