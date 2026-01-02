@@ -1,4 +1,4 @@
-// models/index.js - CON INTEGRACIÓN MDM COMPLETA
+// models/index.js - CON INTEGRACIÓN MDM + TANDAS
 
 const UserModel = require('./User');
 const ClientModel = require('./Client');
@@ -10,7 +10,12 @@ const AuditLogModel = require('./AuditLog');
 const StoreModel = require('./Store');
 const CollectionLogModel = require('./CollectionLog');
 const DeviceMdmModel = require('./DeviceMdm');
-const MdmAccountModel = require('./MdmAccount'); // ⭐ NUEVO
+const MdmAccountModel = require('./MdmAccount');
+// ⭐ TANDAS / CAJA DE AHORRO
+const TandaModel = require('./Tanda');
+const TandaParticipanteModel = require('./TandaParticipante');
+const TandaAportacionModel = require('./TandaAportacion');
+const ConfigFinancieraModel = require('./ConfigFinanciera');
 
 module.exports = (sequelize) => {
     const User = UserModel(sequelize);
@@ -23,7 +28,12 @@ module.exports = (sequelize) => {
     const Store = StoreModel(sequelize);
     const CollectionLog = CollectionLogModel(sequelize);
     const DeviceMdm = DeviceMdmModel(sequelize);
-    const MdmAccount = MdmAccountModel(sequelize); // ⭐ NUEVO
+    const MdmAccount = MdmAccountModel(sequelize);
+    // ⭐ TANDAS
+    const Tanda = TandaModel(sequelize);
+    const TandaParticipante = TandaParticipanteModel(sequelize);
+    const TandaAportacion = TandaAportacionModel(sequelize);
+    const ConfigFinanciera = ConfigFinancieraModel(sequelize);
 
     // =========================================================
     // ASOCIACIONES CON STORE (Multi-Tenant)
@@ -50,9 +60,13 @@ module.exports = (sequelize) => {
     Store.hasMany(DeviceMdm, { foreignKey: 'tienda_id', as: 'devices' });
     DeviceMdm.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
-    // ⭐ MdmAccount - Asociación con Store (opcional)
+    // MdmAccount - Asociación con Store (opcional)
     Store.hasMany(MdmAccount, { foreignKey: 'tienda_id', as: 'mdmAccounts' });
     MdmAccount.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
+
+    // ⭐ Tandas - Asociación con Store (Multi-Tenant)
+    Store.hasMany(Tanda, { foreignKey: 'tienda_id', as: 'tandas' });
+    Tanda.belongsTo(Store, { foreignKey: 'tienda_id', as: 'store' });
 
     // =========================================================
     // ASOCIACIONES DE VENTAS Y CLIENTES
@@ -126,7 +140,7 @@ module.exports = (sequelize) => {
         as: 'client' 
     });
 
-    // ⭐ DeviceMdm - Asociación con MdmAccount (qué cuenta lo gestiona)
+    // DeviceMdm - Asociación con MdmAccount (qué cuenta lo gestiona)
     MdmAccount.hasMany(DeviceMdm, { 
         foreignKey: 'mdm_account_id', 
         as: 'devices' 
@@ -134,6 +148,74 @@ module.exports = (sequelize) => {
     DeviceMdm.belongsTo(MdmAccount, { 
         foreignKey: 'mdm_account_id', 
         as: 'mdmAccount' 
+    });
+
+    // =========================================================
+    // ⭐ ASOCIACIONES DE TANDAS / CAJA DE AHORRO
+    // =========================================================
+    
+    // Tanda tiene muchos participantes
+    Tanda.hasMany(TandaParticipante, { 
+        foreignKey: 'tanda_id', 
+        as: 'participantes',
+        onDelete: 'CASCADE'
+    });
+    TandaParticipante.belongsTo(Tanda, { 
+        foreignKey: 'tanda_id', 
+        as: 'tanda' 
+    });
+
+    // Participante tiene muchas aportaciones
+    TandaParticipante.hasMany(TandaAportacion, { 
+        foreignKey: 'participante_id', 
+        as: 'aportaciones',
+        onDelete: 'CASCADE'
+    });
+    TandaAportacion.belongsTo(TandaParticipante, { 
+        foreignKey: 'participante_id', 
+        as: 'participante' 
+    });
+
+    // Aportación pertenece a una tanda (para queries directas)
+    TandaAportacion.belongsTo(Tanda, { 
+        foreignKey: 'tanda_id', 
+        as: 'tanda' 
+    });
+    Tanda.hasMany(TandaAportacion, { 
+        foreignKey: 'tanda_id', 
+        as: 'aportaciones' 
+    });
+
+    // Participante puede estar vinculado a un usuario del sistema
+    TandaParticipante.belongsTo(User, { 
+        foreignKey: 'user_id', 
+        as: 'usuario' 
+    });
+    User.hasMany(TandaParticipante, { 
+        foreignKey: 'user_id', 
+        as: 'participacionesTandas' 
+    });
+
+    // Tanda creada por un usuario
+    Tanda.belongsTo(User, { 
+        foreignKey: 'creado_por', 
+        as: 'creador' 
+    });
+
+    // Aportación registrada por un usuario
+    TandaAportacion.belongsTo(User, { 
+        foreignKey: 'registrado_por', 
+        as: 'registrador' 
+    });
+
+    // ConfigFinanciera por tienda o global
+    ConfigFinanciera.belongsTo(Store, { 
+        foreignKey: 'tienda_id', 
+        as: 'store' 
+    });
+    ConfigFinanciera.belongsTo(User, { 
+        foreignKey: 'actualizado_por', 
+        as: 'actualizador' 
     });
 
     // =========================================================
@@ -150,6 +232,11 @@ module.exports = (sequelize) => {
         Store,
         CollectionLog,
         DeviceMdm,
-        MdmAccount // ⭐ NUEVO
+        MdmAccount,
+        // ⭐ TANDAS
+        Tanda,
+        TandaParticipante,
+        TandaAportacion,
+        ConfigFinanciera
     };
 };

@@ -1,4 +1,4 @@
-// server.js - CON INTEGRACIÓN MDM COMPLETA Y PANEL ADMIN
+// server.js - CON INTEGRACIÓN MDM COMPLETA + TANDAS
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -162,6 +162,110 @@ sequelize.authenticate()
       console.error('❌ Error con tabla mdm_accounts:', e.message);
     }
 
+    // =========================================================
+    // ⭐ TANDAS: CREAR TABLAS
+    // =========================================================
+    try {
+      console.log('🔄 Verificando tablas de Tandas...');
+      
+      // Tabla principal de tandas
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS tandas (
+          id SERIAL PRIMARY KEY,
+          nombre VARCHAR(100) NOT NULL,
+          descripcion TEXT,
+          monto_turno DECIMAL(10, 2) NOT NULL,
+          aportacion DECIMAL(10, 2) NOT NULL,
+          num_participantes INTEGER NOT NULL,
+          frecuencia VARCHAR(20) DEFAULT 'quincenal',
+          fecha_inicio DATE NOT NULL,
+          fecha_fin DATE,
+          estado VARCHAR(20) DEFAULT 'activa',
+          periodo_actual INTEGER DEFAULT 1,
+          notas TEXT,
+          tienda_id INTEGER NOT NULL,
+          creado_por INTEGER,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_tandas_tienda ON tandas(tienda_id);
+        CREATE INDEX IF NOT EXISTS idx_tandas_estado ON tandas(estado);
+      `);
+      
+      // Tabla de participantes
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS tanda_participantes (
+          id SERIAL PRIMARY KEY,
+          tanda_id INTEGER NOT NULL,
+          nombre VARCHAR(100) NOT NULL,
+          telefono VARCHAR(20),
+          email VARCHAR(100),
+          user_id INTEGER,
+          num_turno INTEGER NOT NULL,
+          fecha_entrega_estimada DATE,
+          entrega_realizada BOOLEAN DEFAULT false,
+          fecha_entrega_real TIMESTAMP,
+          monto_entregado DECIMAL(10, 2),
+          total_aportado DECIMAL(10, 2) DEFAULT 0,
+          estado VARCHAR(20) DEFAULT 'activo',
+          notas TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_tanda_participantes_tanda ON tanda_participantes(tanda_id);
+        CREATE INDEX IF NOT EXISTS idx_tanda_participantes_turno ON tanda_participantes(num_turno);
+      `);
+      
+      // Tabla de aportaciones
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS tanda_aportaciones (
+          id SERIAL PRIMARY KEY,
+          tanda_id INTEGER NOT NULL,
+          participante_id INTEGER NOT NULL,
+          monto DECIMAL(10, 2) NOT NULL,
+          num_periodo INTEGER NOT NULL,
+          fecha_pago TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          metodo_pago VARCHAR(30) DEFAULT 'efectivo',
+          recibo_folio VARCHAR(50),
+          comprobante VARCHAR(255),
+          registrado_por INTEGER,
+          notas TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_tanda_aportaciones_tanda ON tanda_aportaciones(tanda_id);
+        CREATE INDEX IF NOT EXISTS idx_tanda_aportaciones_participante ON tanda_aportaciones(participante_id);
+        CREATE INDEX IF NOT EXISTS idx_tanda_aportaciones_periodo ON tanda_aportaciones(num_periodo);
+      `);
+      
+      // Tabla de configuración financiera
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS config_financiera (
+          id SERIAL PRIMARY KEY,
+          tienda_id INTEGER,
+          ingreso_mensual_promedio DECIMAL(12, 2) DEFAULT 0,
+          liquidez_disponible DECIMAL(12, 2) DEFAULT 0,
+          porcentaje_techo DECIMAL(5, 2) DEFAULT 70,
+          alerta_advertencia DECIMAL(5, 2) DEFAULT 70,
+          alerta_critica DECIMAL(5, 2) DEFAULT 90,
+          actualizado_por INTEGER,
+          ultima_actualizacion TIMESTAMP,
+          notas TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_config_financiera_tienda ON config_financiera(tienda_id);
+      `);
+      
+      console.log('✅ Tablas de Tandas verificadas');
+    } catch (e) {
+      console.error('❌ Error con tablas de Tandas:', e.message);
+    }
+
     // CORS - DEBE IR PRIMERO
     app.use(cors({
       origin: true,
@@ -253,6 +357,14 @@ sequelize.authenticate()
     app.use('/api/mdm-admin', authMiddleware, initMdmAdminRoutes(models));
 
     console.log('✅ Rutas MDM montadas (operativas + admin).');
+
+    // =========================================================
+    // ⭐ RUTAS TANDAS / CAJA DE AHORRO
+    // =========================================================
+    const initTandasRoutes = require('./routes/tandasRoutes');
+    app.use('/api/tandas', authMiddleware, initTandasRoutes(models, sequelize));
+
+    console.log('✅ Rutas de Tandas montadas.');
 
     // =========================================================
     // ⭐ CRON JOB MDM - BLOQUEO AUTOMÁTICO ACTIVADO
