@@ -1,4 +1,5 @@
 // routes/tandasRoutes.js - Rutas para gestión de tandas/caja de ahorro
+// CORREGIDO: Manejo de transacciones sin errores de rollback después de commit
 const express = require('express');
 const { Op } = require('sequelize');
 const PDFDocument = require('pdfkit');
@@ -15,11 +16,10 @@ function initTandasRoutes(models, sequelize) {
     router.get('/config', async (req, res) => {
         try {
             let config = await ConfigFinanciera.findOne({
-                where: { tiendaId: null } // Config global
+                where: { tiendaId: null }
             });
 
             if (!config) {
-                // Crear configuración por defecto
                 config = await ConfigFinanciera.create({
                     tiendaId: null,
                     ingresoMensualPromedio: 0,
@@ -83,10 +83,8 @@ function initTandasRoutes(models, sequelize) {
     // GET /api/tandas/dashboard - Dashboard con métricas de riesgo
     router.get('/dashboard', async (req, res) => {
         try {
-            // Obtener configuración
             const config = await ConfigFinanciera.findOne({ where: { tiendaId: null } });
 
-            // Obtener tandas activas
             const tandasActivas = await Tanda.findAll({
                 where: { estado: 'activa' },
                 include: [{
@@ -97,7 +95,6 @@ function initTandasRoutes(models, sequelize) {
                 }]
             });
 
-            // Calcular compromiso total (suma de todos los montos pendientes de entregar)
             let compromisoTotal = 0;
             let proximasEntregas30Dias = 0;
             const hoy = new Date();
@@ -113,13 +110,11 @@ function initTandasRoutes(models, sequelize) {
                 });
             });
 
-            // Calcular métricas
             const liquidez = parseFloat(config?.liquidezDisponible || 0);
             const porcentajeTecho = parseFloat(config?.porcentajeTecho || 70);
             const techoPermitido = liquidez * (porcentajeTecho / 100);
             const porcentajeUsado = techoPermitido > 0 ? (compromisoTotal / techoPermitido) * 100 : 0;
 
-            // Determinar estado
             let estado = 'saludable';
             let estadoColor = 'green';
             let mensaje = 'Puedes abrir más tandas';
@@ -134,31 +129,23 @@ function initTandasRoutes(models, sequelize) {
                 mensaje = 'Precaución - Cerca del límite';
             }
 
-            // Capacidad disponible
             const capacidadDisponible = Math.max(0, techoPermitido - compromisoTotal);
 
             res.json({
                 success: true,
                 dashboard: {
-                    // Configuración
                     ingresoMensualPromedio: parseFloat(config?.ingresoMensualPromedio || 0),
                     liquidezDisponible: liquidez,
                     porcentajeTecho,
-
-                    // Métricas calculadas
                     tandasActivas: tandasActivas.length,
                     compromisoTotal,
                     proximasEntregas30Dias,
                     techoPermitido,
                     porcentajeUsado: Math.round(porcentajeUsado * 10) / 10,
                     capacidadDisponible,
-
-                    // Estado
                     estado,
                     estadoColor,
                     mensaje,
-
-                    // Última actualización
                     ultimaActualizacion: config?.ultimaActualizacion
                 }
             });
@@ -234,9 +221,12 @@ function initTandasRoutes(models, sequelize) {
 
     // POST /api/tandas - Crear nueva tanda
     router.post('/', async (req, res) => {
-        const t = await sequelize.transaction();
+        let t;
+        let committed = false;
         
         try {
+            t = await sequelize.transaction();
+            
             const { nombre, descripcion, montoTurno, aportacion, numParticipantes, frecuencia, fechaInicio, participantes, notas } = req.body;
 
             // Validaciones
@@ -301,16 +291,21 @@ function initTandasRoutes(models, sequelize) {
             }
 
             await t.commit();
+            committed = true;
 
-            // Auditoría
+            // Auditoría (fuera de la transacción)
             if (AuditLog) {
-                await AuditLog.create({
-                    tabla: 'tandas',
-                    accion: 'CREAR TANDA',
-                    descripcion: `Tanda "${nombre}" creada. Monto: $${montoTurno}, Participantes: ${numParticipantes}`,
-                    usuarioId: req.user?.id,
-                    tienda_id: req.user?.tiendaId
-                });
+                try {
+                    await AuditLog.create({
+                        tabla: 'tandas',
+                        accion: 'CREAR TANDA',
+                        descripcion: `Tanda "${nombre}" creada. Monto: $${montoTurno}, Participantes: ${numParticipantes}`,
+                        usuarioId: req.user?.id,
+                        tienda_id: req.user?.tiendaId
+                    });
+                } catch (auditError) {
+                    console.error('Error en auditoría:', auditError);
+                }
             }
 
             // Obtener tanda con participantes
@@ -325,7 +320,13 @@ function initTandasRoutes(models, sequelize) {
             });
 
         } catch (error) {
-            await t.rollback();
+            if (t && !committed) {
+                try {
+                    await t.rollback();
+                } catch (rollbackError) {
+                    console.error('Error en rollback:', rollbackError);
+                }
+            }
             console.error('Error al crear tanda:', error);
             res.status(500).json({ success: false, error: error.message });
         }
@@ -368,7 +369,6 @@ function initTandasRoutes(models, sequelize) {
                 return res.status(404).json({ success: false, message: 'Tanda no encontrada' });
             }
 
-            // Verificar si tiene aportaciones
             const aportaciones = await TandaAportacion.count({ where: { tandaId: tanda.id } });
             if (aportaciones > 0) {
                 return res.status(400).json({
@@ -377,7 +377,6 @@ function initTandasRoutes(models, sequelize) {
                 });
             }
 
-            // Eliminar participantes y tanda
             await TandaParticipante.destroy({ where: { tandaId: tanda.id } });
             await tanda.destroy();
 
@@ -412,7 +411,6 @@ function initTandasRoutes(models, sequelize) {
 
             const { nombre, telefono, email, userId, numTurno, notas } = req.body;
 
-            // Verificar turno disponible
             if (numTurno) {
                 const turnoOcupado = await TandaParticipante.findOne({
                     where: { tandaId: tanda.id, numTurno }
@@ -425,7 +423,6 @@ function initTandasRoutes(models, sequelize) {
                 }
             }
 
-            // Calcular fecha de entrega
             const diasPorPeriodo = tanda.frecuencia === 'semanal' ? 7 : tanda.frecuencia === 'quincenal' ? 15 : 30;
             const turnoAsignado = numTurno || participantesActuales + 1;
             const fechaEntrega = new Date(tanda.fechaInicio);
@@ -485,9 +482,12 @@ function initTandasRoutes(models, sequelize) {
 
     // POST /api/tandas/:id/aportaciones - Registrar aportación
     router.post('/:id/aportaciones', async (req, res) => {
-        const t = await sequelize.transaction();
+        let t;
+        let committed = false;
         
         try {
+            t = await sequelize.transaction();
+            
             const tanda = await Tanda.findByPk(req.params.id);
             
             if (!tanda) {
@@ -506,7 +506,6 @@ function initTandasRoutes(models, sequelize) {
                 return res.status(404).json({ success: false, message: 'Participante no encontrado' });
             }
 
-            // Verificar si ya existe aportación para este período
             const aportacionExistente = await TandaAportacion.findOne({
                 where: { tandaId: tanda.id, participanteId, numPeriodo }
             });
@@ -519,10 +518,8 @@ function initTandasRoutes(models, sequelize) {
                 });
             }
 
-            // Generar folio
             const folio = `APT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
 
-            // Crear aportación
             const aportacion = await TandaAportacion.create({
                 tandaId: tanda.id,
                 participanteId,
@@ -534,12 +531,12 @@ function initTandasRoutes(models, sequelize) {
                 notas
             }, { transaction: t });
 
-            // Actualizar total aportado del participante
             await participante.update({
                 totalAportado: parseFloat(participante.totalAportado) + parseFloat(monto || tanda.aportacion)
             }, { transaction: t });
 
             await t.commit();
+            committed = true;
 
             res.status(201).json({
                 success: true,
@@ -549,7 +546,13 @@ function initTandasRoutes(models, sequelize) {
             });
 
         } catch (error) {
-            await t.rollback();
+            if (t && !committed) {
+                try {
+                    await t.rollback();
+                } catch (rollbackError) {
+                    console.error('Error en rollback:', rollbackError);
+                }
+            }
             console.error('Error al registrar aportación:', error);
             res.status(500).json({ success: false, error: error.message });
         }
@@ -581,9 +584,12 @@ function initTandasRoutes(models, sequelize) {
 
     // POST /api/tandas/:id/entregas - Registrar entrega de turno
     router.post('/:id/entregas', async (req, res) => {
-        const t = await sequelize.transaction();
+        let t;
+        let committed = false;
         
         try {
+            t = await sequelize.transaction();
+            
             const tanda = await Tanda.findByPk(req.params.id);
             
             if (!tanda) {
@@ -610,7 +616,6 @@ function initTandasRoutes(models, sequelize) {
                 });
             }
 
-            // Registrar entrega
             await participante.update({
                 entregaRealizada: true,
                 fechaEntregaReal: new Date(),
@@ -618,26 +623,30 @@ function initTandasRoutes(models, sequelize) {
                 notas: notas ? `${participante.notas || ''}\nEntrega: ${notas}` : participante.notas
             }, { transaction: t });
 
-            // Verificar si todas las entregas están completas
             const entregasPendientes = await TandaParticipante.count({
                 where: { tandaId: tanda.id, entregaRealizada: false }
             });
 
-            if (entregasPendientes === 0) {
+            if (entregasPendientes <= 1) { // <= 1 porque aún no se ha commiteado el update
                 await tanda.update({ estado: 'completada' }, { transaction: t });
             }
 
             await t.commit();
+            committed = true;
 
-            // Auditoría
+            // Auditoría (fuera de la transacción)
             if (AuditLog) {
-                await AuditLog.create({
-                    tabla: 'tanda_participantes',
-                    accion: 'ENTREGA TANDA',
-                    descripcion: `Entrega de $${montoEntregado || tanda.montoTurno} a ${participante.nombre} en tanda "${tanda.nombre}"`,
-                    usuarioId: req.user?.id,
-                    tienda_id: req.user?.tiendaId
-                });
+                try {
+                    await AuditLog.create({
+                        tabla: 'tanda_participantes',
+                        accion: 'ENTREGA TANDA',
+                        descripcion: `Entrega de $${montoEntregado || tanda.montoTurno} a ${participante.nombre} en tanda "${tanda.nombre}"`,
+                        usuarioId: req.user?.id,
+                        tienda_id: req.user?.tiendaId
+                    });
+                } catch (auditError) {
+                    console.error('Error en auditoría:', auditError);
+                }
             }
 
             res.json({
@@ -647,7 +656,13 @@ function initTandasRoutes(models, sequelize) {
             });
 
         } catch (error) {
-            await t.rollback();
+            if (t && !committed) {
+                try {
+                    await t.rollback();
+                } catch (rollbackError) {
+                    console.error('Error en rollback:', rollbackError);
+                }
+            }
             console.error('Error al registrar entrega:', error);
             res.status(500).json({ success: false, error: error.message });
         }
@@ -662,14 +677,8 @@ function initTandasRoutes(models, sequelize) {
         try {
             const aportacion = await TandaAportacion.findByPk(req.params.aportacionId, {
                 include: [
-                    {
-                        model: TandaParticipante,
-                        as: 'participante'
-                    },
-                    {
-                        model: Tanda,
-                        as: 'tanda'
-                    }
+                    { model: TandaParticipante, as: 'participante' },
+                    { model: Tanda, as: 'tanda' }
                 ]
             });
 
@@ -684,16 +693,13 @@ function initTandasRoutes(models, sequelize) {
             
             doc.pipe(res);
 
-            // Encabezado
             doc.fontSize(16).font('Helvetica-Bold').text('CELEXPRESS', { align: 'center' });
             doc.fontSize(12).font('Helvetica').text('RECIBO DE AHORRO', { align: 'center' });
             doc.moveDown(0.5);
             
-            // Línea
             doc.moveTo(30, doc.y).lineTo(270, doc.y).stroke();
             doc.moveDown(0.5);
 
-            // Datos
             doc.fontSize(10);
             doc.text(`Folio: ${aportacion.reciboFolio}`);
             doc.text(`Fecha: ${new Date(aportacion.fechaPago).toLocaleDateString('es-MX')}`);
@@ -705,16 +711,16 @@ function initTandasRoutes(models, sequelize) {
             doc.moveDown(0.5);
 
             doc.font('Helvetica-Bold');
-            doc.text(`Aportación: $${parseFloat(aportacion.monto).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
+            doc.text(`Aportacion: $${parseFloat(aportacion.monto).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
             doc.font('Helvetica');
-            doc.text(`Período: ${aportacion.numPeriodo} de ${aportacion.tanda.numParticipantes}`);
+            doc.text(`Periodo: ${aportacion.numPeriodo} de ${aportacion.tanda.numParticipantes}`);
             doc.text(`Acumulado: $${parseFloat(aportacion.participante.totalAportado).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
             
             const restante = parseFloat(aportacion.tanda.montoTurno) - parseFloat(aportacion.participante.totalAportado);
             doc.text(`Restante: $${restante.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
             doc.moveDown(0.5);
 
-            doc.text(`Método: ${aportacion.metodoPago}`);
+            doc.text(`Metodo: ${aportacion.metodoPago}`);
             
             if (aportacion.participante.fechaEntregaEstimada) {
                 doc.moveDown(0.5);
@@ -735,10 +741,7 @@ function initTandasRoutes(models, sequelize) {
     router.get('/comprobante/:participanteId', async (req, res) => {
         try {
             const participante = await TandaParticipante.findByPk(req.params.participanteId, {
-                include: [{
-                    model: Tanda,
-                    as: 'tanda'
-                }]
+                include: [{ model: Tanda, as: 'tanda' }]
             });
 
             if (!participante) {
@@ -746,7 +749,7 @@ function initTandasRoutes(models, sequelize) {
             }
 
             if (!participante.entregaRealizada) {
-                return res.status(400).json({ success: false, message: 'Aún no se ha realizado la entrega' });
+                return res.status(400).json({ success: false, message: 'Aun no se ha realizado la entrega' });
             }
 
             const doc = new PDFDocument({ size: 'A5', margin: 40 });
@@ -756,23 +759,19 @@ function initTandasRoutes(models, sequelize) {
             
             doc.pipe(res);
 
-            // Encabezado
             doc.fontSize(18).font('Helvetica-Bold').text('CELEXPRESS', { align: 'center' });
             doc.fontSize(14).font('Helvetica').text('COMPROBANTE DE ENTREGA', { align: 'center' });
             doc.moveDown();
             
-            // Línea
             doc.moveTo(40, doc.y).lineTo(360, doc.y).stroke();
             doc.moveDown();
 
-            // Folio
             const folio = `ENT-${new Date().getFullYear()}-${String(participante.id).padStart(5, '0')}`;
             doc.fontSize(11);
             doc.text(`Folio: ${folio}`);
             doc.text(`Fecha: ${new Date(participante.fechaEntregaReal).toLocaleDateString('es-MX')}`);
             doc.moveDown();
 
-            // Datos del beneficiario
             doc.font('Helvetica-Bold').text('Beneficiario:', { continued: true });
             doc.font('Helvetica').text(` ${participante.nombre}`);
             
@@ -783,14 +782,12 @@ function initTandasRoutes(models, sequelize) {
             doc.font('Helvetica').text(` #${participante.numTurno}`);
             doc.moveDown();
 
-            // Monto
             doc.fontSize(14).font('Helvetica-Bold');
             doc.text('MONTO ENTREGADO:', { align: 'center' });
             doc.fontSize(20);
             doc.text(`$${parseFloat(participante.montoEntregado).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`, { align: 'center' });
             doc.moveDown();
 
-            // Detalles
             doc.fontSize(11).font('Helvetica');
             doc.text(`Total aportado: $${parseFloat(participante.totalAportado).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
             
@@ -800,7 +797,6 @@ function initTandasRoutes(models, sequelize) {
             }
             doc.moveDown(2);
 
-            // Firmas
             doc.text('_______________________          _______________________');
             doc.text('    Firma participante                      Firma responsable');
 
@@ -818,9 +814,12 @@ function initTandasRoutes(models, sequelize) {
 
     // POST /api/tandas/:id/sorteo - Realizar sorteo de turnos
     router.post('/:id/sorteo', async (req, res) => {
-        const t = await sequelize.transaction();
+        let t;
+        let committed = false;
         
         try {
+            t = await sequelize.transaction();
+            
             const tanda = await Tanda.findByPk(req.params.id, {
                 include: [{ model: TandaParticipante, as: 'participantes' }]
             });
@@ -830,7 +829,6 @@ function initTandasRoutes(models, sequelize) {
                 return res.status(404).json({ success: false, message: 'Tanda no encontrada' });
             }
 
-            // Verificar que no haya aportaciones
             const aportaciones = await TandaAportacion.count({ where: { tandaId: tanda.id } });
             if (aportaciones > 0) {
                 await t.rollback();
@@ -849,7 +847,6 @@ function initTandasRoutes(models, sequelize) {
                 [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
             }
 
-            // Asignar nuevos turnos
             const diasPorPeriodo = tanda.frecuencia === 'semanal' ? 7 : tanda.frecuencia === 'quincenal' ? 15 : 30;
             
             for (let i = 0; i < shuffled.length; i++) {
@@ -866,8 +863,8 @@ function initTandasRoutes(models, sequelize) {
             }
 
             await t.commit();
+            committed = true;
 
-            // Obtener tanda actualizada
             const tandaActualizada = await Tanda.findByPk(tanda.id, {
                 include: [{
                     model: TandaParticipante,
@@ -883,7 +880,13 @@ function initTandasRoutes(models, sequelize) {
             });
 
         } catch (error) {
-            await t.rollback();
+            if (t && !committed) {
+                try {
+                    await t.rollback();
+                } catch (rollbackError) {
+                    console.error('Error en rollback:', rollbackError);
+                }
+            }
             console.error('Error en sorteo:', error);
             res.status(500).json({ success: false, error: error.message });
         }
