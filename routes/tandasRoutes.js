@@ -1,11 +1,11 @@
 // routes/tandasRoutes.js - Rutas para gestión de tandas/caja de ahorro
-// CORREGIDO: Autenticación por query param para PDFs + botón eliminar
+// CORREGIDO: Maneja autenticación internamente para permitir PDFs con token en query
 const express = require('express');
 const { Op } = require('sequelize');
 const PDFDocument = require('pdfkit');
 const jwt = require('jsonwebtoken');
 
-function initTandasRoutes(models, sequelize) {
+function initTandasRoutes(models, sequelize, authMiddleware) {
     const router = express.Router();
     const { Tanda, TandaParticipante, TandaAportacion, ConfigFinanciera, User, Store, AuditLog } = models;
 
@@ -14,7 +14,7 @@ function initTandasRoutes(models, sequelize) {
         const token = req.query.token || req.headers.authorization?.split(' ')[1];
         
         if (!token) {
-            return res.status(401).json({ message: 'Acceso denegado. No se proporcionó token.' });
+            return res.status(401).json({ message: 'Acceso denegado. Token requerido.' });
         }
 
         try {
@@ -27,10 +27,9 @@ function initTandasRoutes(models, sequelize) {
     };
 
     // =========================================================
-    // RECIBOS PDF - PRIMERO para que no conflictúen con /:id
+    // RECIBOS PDF - SIN authMiddleware, usa verifyTokenFromQuery
     // =========================================================
 
-    // GET /api/tandas/recibo/:aportacionId - Generar recibo PDF
     router.get('/recibo/:aportacionId', verifyTokenFromQuery, async (req, res) => {
         try {
             const aportacion = await TandaAportacion.findByPk(req.params.aportacionId, {
@@ -95,7 +94,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // GET /api/tandas/comprobante/:participanteId - Generar comprobante de entrega PDF
     router.get('/comprobante/:participanteId', verifyTokenFromQuery, async (req, res) => {
         try {
             const participante = await TandaParticipante.findByPk(req.params.participanteId, {
@@ -167,10 +165,10 @@ function initTandasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // CONFIGURACIÓN FINANCIERA
+    // TODAS LAS DEMÁS RUTAS - CON authMiddleware
     // =========================================================
 
-    router.get('/config', async (req, res) => {
+    router.get('/config', authMiddleware, async (req, res) => {
         try {
             let config = await ConfigFinanciera.findOne({
                 where: { tiendaId: null }
@@ -194,7 +192,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    router.put('/config', async (req, res) => {
+    router.put('/config', authMiddleware, async (req, res) => {
         try {
             const { ingresoMensualPromedio, liquidezDisponible, porcentajeTecho, alertaAdvertencia, alertaCritica, notas } = req.body;
 
@@ -232,11 +230,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // =========================================================
-    // DASHBOARD DE RIESGO FINANCIERO
-    // =========================================================
-
-    router.get('/dashboard', async (req, res) => {
+    router.get('/dashboard', authMiddleware, async (req, res) => {
         try {
             const config = await ConfigFinanciera.findOne({ where: { tiendaId: null } });
 
@@ -310,11 +304,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // =========================================================
-    // CRUD DE TANDAS
-    // =========================================================
-
-    router.get('/', async (req, res) => {
+    router.get('/', authMiddleware, async (req, res) => {
         try {
             const { estado, page = 1, limit = 20 } = req.query;
             const where = {};
@@ -346,7 +336,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    router.get('/:id', async (req, res) => {
+    router.get('/:id', authMiddleware, async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id, {
                 include: [{
@@ -370,7 +360,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    router.post('/', async (req, res) => {
+    router.post('/', authMiddleware, async (req, res) => {
         let t;
         let committed = false;
         
@@ -475,7 +465,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    router.put('/:id', async (req, res) => {
+    router.put('/:id', authMiddleware, async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id);
             
@@ -500,8 +490,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // DELETE /api/tandas/:id - Eliminar tanda
-    router.delete('/:id', async (req, res) => {
+    router.delete('/:id', authMiddleware, async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id);
 
@@ -544,11 +533,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // =========================================================
-    // PARTICIPANTES
-    // =========================================================
-
-    router.post('/:id/participantes', async (req, res) => {
+    router.post('/:id/participantes', authMiddleware, async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id);
             
@@ -603,7 +588,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    router.put('/:id/participantes/:participanteId', async (req, res) => {
+    router.put('/:id/participantes/:participanteId', authMiddleware, async (req, res) => {
         try {
             const participante = await TandaParticipante.findOne({
                 where: { id: req.params.participanteId, tandaId: req.params.id }
@@ -631,11 +616,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // =========================================================
-    // APORTACIONES
-    // =========================================================
-
-    router.post('/:id/aportaciones', async (req, res) => {
+    router.post('/:id/aportaciones', authMiddleware, async (req, res) => {
         let t;
         let committed = false;
         
@@ -712,7 +693,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    router.get('/:id/aportaciones', async (req, res) => {
+    router.get('/:id/aportaciones', authMiddleware, async (req, res) => {
         try {
             const aportaciones = await TandaAportacion.findAll({
                 where: { tandaId: req.params.id },
@@ -731,11 +712,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // =========================================================
-    // ENTREGAS
-    // =========================================================
-
-    router.post('/:id/entregas', async (req, res) => {
+    router.post('/:id/entregas', authMiddleware, async (req, res) => {
         let t;
         let committed = false;
         
@@ -819,11 +796,7 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // =========================================================
-    // SORTEO DE TURNOS
-    // =========================================================
-
-    router.post('/:id/sorteo', async (req, res) => {
+    router.post('/:id/sorteo', authMiddleware, async (req, res) => {
         let t;
         let committed = false;
         

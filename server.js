@@ -362,8 +362,7 @@ sequelize.authenticate()
     // ⭐ RUTAS TANDAS / CAJA DE AHORRO
     // =========================================================
     const initTandasRoutes = require('./routes/tandasRoutes');
-    app.use('/api/tandas', authMiddleware, initTandasRoutes(models, sequelize));
-
+   app.use('/api/tandas', initTandasRoutes(models, sequelize, authMiddleware));
     console.log('✅ Rutas de Tandas montadas.');
 
     // =========================================================
