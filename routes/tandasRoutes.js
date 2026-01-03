@@ -1,18 +1,175 @@
 // routes/tandasRoutes.js - Rutas para gestión de tandas/caja de ahorro
-// CORREGIDO: Manejo de transacciones sin errores de rollback después de commit
+// CORREGIDO: Autenticación por query param para PDFs + botón eliminar
 const express = require('express');
 const { Op } = require('sequelize');
 const PDFDocument = require('pdfkit');
+const jwt = require('jsonwebtoken');
 
 function initTandasRoutes(models, sequelize) {
     const router = express.Router();
     const { Tanda, TandaParticipante, TandaAportacion, ConfigFinanciera, User, Store, AuditLog } = models;
 
+    // Middleware para verificar token en query param (para PDFs)
+    const verifyTokenFromQuery = (req, res, next) => {
+        const token = req.query.token || req.headers.authorization?.split(' ')[1];
+        
+        if (!token) {
+            return res.status(401).json({ message: 'Acceso denegado. No se proporcionó token.' });
+        }
+
+        try {
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            req.user = decoded;
+            next();
+        } catch (error) {
+            return res.status(401).json({ message: 'Token inválido o expirado.' });
+        }
+    };
+
+    // =========================================================
+    // RECIBOS PDF - PRIMERO para que no conflictúen con /:id
+    // =========================================================
+
+    // GET /api/tandas/recibo/:aportacionId - Generar recibo PDF
+    router.get('/recibo/:aportacionId', verifyTokenFromQuery, async (req, res) => {
+        try {
+            const aportacion = await TandaAportacion.findByPk(req.params.aportacionId, {
+                include: [
+                    { model: TandaParticipante, as: 'participante' },
+                    { model: Tanda, as: 'tanda' }
+                ]
+            });
+
+            if (!aportacion) {
+                return res.status(404).json({ success: false, message: 'Aportación no encontrada' });
+            }
+
+            const doc = new PDFDocument({ size: 'A6', margin: 30 });
+            
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `inline; filename=recibo-${aportacion.reciboFolio}.pdf`);
+            
+            doc.pipe(res);
+
+            doc.fontSize(16).font('Helvetica-Bold').text('CELEXPRESS', { align: 'center' });
+            doc.fontSize(12).font('Helvetica').text('RECIBO DE AHORRO', { align: 'center' });
+            doc.moveDown(0.5);
+            
+            doc.moveTo(30, doc.y).lineTo(270, doc.y).stroke();
+            doc.moveDown(0.5);
+
+            doc.fontSize(10);
+            doc.text(`Folio: ${aportacion.reciboFolio}`);
+            doc.text(`Fecha: ${new Date(aportacion.fechaPago).toLocaleDateString('es-MX')}`);
+            doc.moveDown(0.5);
+
+            doc.text(`Participante: ${aportacion.participante.nombre}`);
+            doc.text(`Tanda: ${aportacion.tanda.nombre}`);
+            doc.text(`Turno asignado: #${aportacion.participante.numTurno}`);
+            doc.moveDown(0.5);
+
+            doc.font('Helvetica-Bold');
+            doc.text(`Aportacion: $${parseFloat(aportacion.monto).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
+            doc.font('Helvetica');
+            doc.text(`Periodo: ${aportacion.numPeriodo} de ${aportacion.tanda.numParticipantes}`);
+            doc.text(`Acumulado: $${parseFloat(aportacion.participante.totalAportado || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
+            
+            const restante = parseFloat(aportacion.tanda.montoTurno) - parseFloat(aportacion.participante.totalAportado || 0);
+            doc.text(`Restante: $${Math.max(0, restante).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
+            doc.moveDown(0.5);
+
+            doc.text(`Metodo: ${aportacion.metodoPago}`);
+            
+            if (aportacion.participante.fechaEntregaEstimada) {
+                doc.moveDown(0.5);
+                doc.text(`Fecha estimada de entrega:`);
+                doc.font('Helvetica-Bold');
+                doc.text(new Date(aportacion.participante.fechaEntregaEstimada).toLocaleDateString('es-MX'));
+            }
+
+            doc.end();
+
+        } catch (error) {
+            console.error('Error al generar recibo:', error);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    });
+
+    // GET /api/tandas/comprobante/:participanteId - Generar comprobante de entrega PDF
+    router.get('/comprobante/:participanteId', verifyTokenFromQuery, async (req, res) => {
+        try {
+            const participante = await TandaParticipante.findByPk(req.params.participanteId, {
+                include: [{ model: Tanda, as: 'tanda' }]
+            });
+
+            if (!participante) {
+                return res.status(404).json({ success: false, message: 'Participante no encontrado' });
+            }
+
+            if (!participante.entregaRealizada) {
+                return res.status(400).json({ success: false, message: 'Aun no se ha realizado la entrega' });
+            }
+
+            const doc = new PDFDocument({ size: 'A5', margin: 40 });
+            
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `inline; filename=comprobante-entrega-${participante.id}.pdf`);
+            
+            doc.pipe(res);
+
+            doc.fontSize(18).font('Helvetica-Bold').text('CELEXPRESS', { align: 'center' });
+            doc.fontSize(14).font('Helvetica').text('COMPROBANTE DE ENTREGA', { align: 'center' });
+            doc.moveDown();
+            
+            doc.moveTo(40, doc.y).lineTo(360, doc.y).stroke();
+            doc.moveDown();
+
+            const folio = `ENT-${new Date().getFullYear()}-${String(participante.id).padStart(5, '0')}`;
+            doc.fontSize(11);
+            doc.text(`Folio: ${folio}`);
+            doc.text(`Fecha: ${new Date(participante.fechaEntregaReal).toLocaleDateString('es-MX')}`);
+            doc.moveDown();
+
+            doc.font('Helvetica-Bold').text('Beneficiario:', { continued: true });
+            doc.font('Helvetica').text(` ${participante.nombre}`);
+            
+            doc.font('Helvetica-Bold').text('Tanda:', { continued: true });
+            doc.font('Helvetica').text(` ${participante.tanda.nombre}`);
+            
+            doc.font('Helvetica-Bold').text('Turno:', { continued: true });
+            doc.font('Helvetica').text(` #${participante.numTurno}`);
+            doc.moveDown();
+
+            doc.fontSize(14).font('Helvetica-Bold');
+            doc.text('MONTO ENTREGADO:', { align: 'center' });
+            doc.fontSize(20);
+            doc.text(`$${parseFloat(participante.montoEntregado || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`, { align: 'center' });
+            doc.moveDown();
+
+            doc.fontSize(11).font('Helvetica');
+            doc.text(`Total aportado: $${parseFloat(participante.totalAportado || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
+            
+            const pendiente = parseFloat(participante.tanda.montoTurno) - parseFloat(participante.totalAportado || 0);
+            if (pendiente > 0) {
+                doc.text(`Pendiente por aportar: $${pendiente.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
+            }
+            doc.moveDown(2);
+
+            doc.text('_______________________          _______________________');
+            doc.text('    Firma participante                      Firma responsable');
+
+            doc.end();
+
+        } catch (error) {
+            console.error('Error al generar comprobante:', error);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    });
+
     // =========================================================
     // CONFIGURACIÓN FINANCIERA
     // =========================================================
 
-    // GET /api/tandas/config - Obtener configuración financiera
     router.get('/config', async (req, res) => {
         try {
             let config = await ConfigFinanciera.findOne({
@@ -37,7 +194,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // PUT /api/tandas/config - Actualizar configuración financiera
     router.put('/config', async (req, res) => {
         try {
             const { ingresoMensualPromedio, liquidezDisponible, porcentajeTecho, alertaAdvertencia, alertaCritica, notas } = req.body;
@@ -80,7 +236,6 @@ function initTandasRoutes(models, sequelize) {
     // DASHBOARD DE RIESGO FINANCIERO
     // =========================================================
 
-    // GET /api/tandas/dashboard - Dashboard con métricas de riesgo
     router.get('/dashboard', async (req, res) => {
         try {
             const config = await ConfigFinanciera.findOne({ where: { tiendaId: null } });
@@ -159,7 +314,6 @@ function initTandasRoutes(models, sequelize) {
     // CRUD DE TANDAS
     // =========================================================
 
-    // GET /api/tandas - Listar todas las tandas
     router.get('/', async (req, res) => {
         try {
             const { estado, page = 1, limit = 20 } = req.query;
@@ -192,7 +346,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // GET /api/tandas/:id - Obtener tanda con detalles
     router.get('/:id', async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id, {
@@ -201,10 +354,8 @@ function initTandasRoutes(models, sequelize) {
                     as: 'participantes',
                     include: [{
                         model: TandaAportacion,
-                        as: 'aportaciones',
-                        order: [['numPeriodo', 'ASC']]
-                    }],
-                    order: [['numTurno', 'ASC']]
+                        as: 'aportaciones'
+                    }]
                 }]
             });
 
@@ -219,7 +370,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // POST /api/tandas - Crear nueva tanda
     router.post('/', async (req, res) => {
         let t;
         let committed = false;
@@ -229,7 +379,6 @@ function initTandasRoutes(models, sequelize) {
             
             const { nombre, descripcion, montoTurno, aportacion, numParticipantes, frecuencia, fechaInicio, participantes, notas } = req.body;
 
-            // Validaciones
             if (!nombre || !montoTurno || !aportacion || !numParticipantes || !fechaInicio) {
                 await t.rollback();
                 return res.status(400).json({
@@ -238,7 +387,6 @@ function initTandasRoutes(models, sequelize) {
                 });
             }
 
-            // Validar que aportacion * numParticipantes = montoTurno
             const montoEsperado = parseFloat(aportacion) * parseInt(numParticipantes);
             if (Math.abs(montoEsperado - parseFloat(montoTurno)) > 0.01) {
                 await t.rollback();
@@ -248,12 +396,10 @@ function initTandasRoutes(models, sequelize) {
                 });
             }
 
-            // Calcular fecha fin
             const diasPorPeriodo = frecuencia === 'semanal' ? 7 : frecuencia === 'quincenal' ? 15 : 30;
             const fechaFin = new Date(fechaInicio);
             fechaFin.setDate(fechaFin.getDate() + (diasPorPeriodo * numParticipantes));
 
-            // Crear tanda
             const tanda = await Tanda.create({
                 nombre,
                 descripcion,
@@ -270,7 +416,6 @@ function initTandasRoutes(models, sequelize) {
                 notas
             }, { transaction: t });
 
-            // Crear participantes si se proporcionaron
             if (participantes && Array.isArray(participantes)) {
                 for (let i = 0; i < participantes.length; i++) {
                     const p = participantes[i];
@@ -293,7 +438,6 @@ function initTandasRoutes(models, sequelize) {
             await t.commit();
             committed = true;
 
-            // Auditoría (fuera de la transacción)
             if (AuditLog) {
                 try {
                     await AuditLog.create({
@@ -308,7 +452,6 @@ function initTandasRoutes(models, sequelize) {
                 }
             }
 
-            // Obtener tanda con participantes
             const tandaCompleta = await Tanda.findByPk(tanda.id, {
                 include: [{ model: TandaParticipante, as: 'participantes' }]
             });
@@ -332,7 +475,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // PUT /api/tandas/:id - Actualizar tanda
     router.put('/:id', async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id);
@@ -358,29 +500,44 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // DELETE /api/tandas/:id - Eliminar tanda (solo si no tiene movimientos)
+    // DELETE /api/tandas/:id - Eliminar tanda
     router.delete('/:id', async (req, res) => {
         try {
-            const tanda = await Tanda.findByPk(req.params.id, {
-                include: [{ model: TandaParticipante, as: 'participantes' }]
-            });
+            const tanda = await Tanda.findByPk(req.params.id);
 
             if (!tanda) {
                 return res.status(404).json({ success: false, message: 'Tanda no encontrada' });
             }
 
             const aportaciones = await TandaAportacion.count({ where: { tandaId: tanda.id } });
+            
             if (aportaciones > 0) {
                 return res.status(400).json({
                     success: false,
-                    message: 'No se puede eliminar una tanda con aportaciones registradas. Cámbiala a estado "cancelada".'
+                    message: 'No se puede eliminar una tanda con aportaciones. Cámbiala a "cancelada" en su lugar.'
                 });
             }
 
             await TandaParticipante.destroy({ where: { tandaId: tanda.id } });
+            
+            const nombreTanda = tanda.nombre;
             await tanda.destroy();
 
-            res.json({ success: true, message: 'Tanda eliminada' });
+            if (AuditLog) {
+                try {
+                    await AuditLog.create({
+                        tabla: 'tandas',
+                        accion: 'ELIMINAR TANDA',
+                        descripcion: `Tanda "${nombreTanda}" eliminada`,
+                        usuarioId: req.user?.id,
+                        tienda_id: req.user?.tiendaId
+                    });
+                } catch (auditError) {
+                    console.error('Error en auditoría:', auditError);
+                }
+            }
+
+            res.json({ success: true, message: 'Tanda eliminada exitosamente' });
         } catch (error) {
             console.error('Error al eliminar tanda:', error);
             res.status(500).json({ success: false, error: error.message });
@@ -391,7 +548,6 @@ function initTandasRoutes(models, sequelize) {
     // PARTICIPANTES
     // =========================================================
 
-    // POST /api/tandas/:id/participantes - Agregar participante
     router.post('/:id/participantes', async (req, res) => {
         try {
             const tanda = await Tanda.findByPk(req.params.id);
@@ -447,7 +603,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // PUT /api/tandas/:id/participantes/:participanteId - Actualizar participante
     router.put('/:id/participantes/:participanteId', async (req, res) => {
         try {
             const participante = await TandaParticipante.findOne({
@@ -480,7 +635,6 @@ function initTandasRoutes(models, sequelize) {
     // APORTACIONES
     // =========================================================
 
-    // POST /api/tandas/:id/aportaciones - Registrar aportación
     router.post('/:id/aportaciones', async (req, res) => {
         let t;
         let committed = false;
@@ -532,7 +686,7 @@ function initTandasRoutes(models, sequelize) {
             }, { transaction: t });
 
             await participante.update({
-                totalAportado: parseFloat(participante.totalAportado) + parseFloat(monto || tanda.aportacion)
+                totalAportado: parseFloat(participante.totalAportado || 0) + parseFloat(monto || tanda.aportacion)
             }, { transaction: t });
 
             await t.commit();
@@ -558,7 +712,6 @@ function initTandasRoutes(models, sequelize) {
         }
     });
 
-    // GET /api/tandas/:id/aportaciones - Listar aportaciones de una tanda
     router.get('/:id/aportaciones', async (req, res) => {
         try {
             const aportaciones = await TandaAportacion.findAll({
@@ -582,7 +735,6 @@ function initTandasRoutes(models, sequelize) {
     // ENTREGAS
     // =========================================================
 
-    // POST /api/tandas/:id/entregas - Registrar entrega de turno
     router.post('/:id/entregas', async (req, res) => {
         let t;
         let committed = false;
@@ -627,14 +779,13 @@ function initTandasRoutes(models, sequelize) {
                 where: { tandaId: tanda.id, entregaRealizada: false }
             });
 
-            if (entregasPendientes <= 1) { // <= 1 porque aún no se ha commiteado el update
+            if (entregasPendientes <= 1) {
                 await tanda.update({ estado: 'completada' }, { transaction: t });
             }
 
             await t.commit();
             committed = true;
 
-            // Auditoría (fuera de la transacción)
             if (AuditLog) {
                 try {
                     await AuditLog.create({
@@ -669,150 +820,9 @@ function initTandasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // RECIBOS PDF
-    // =========================================================
-
-    // GET /api/tandas/recibo/:aportacionId - Generar recibo de aportación PDF
-    router.get('/recibo/:aportacionId', async (req, res) => {
-        try {
-            const aportacion = await TandaAportacion.findByPk(req.params.aportacionId, {
-                include: [
-                    { model: TandaParticipante, as: 'participante' },
-                    { model: Tanda, as: 'tanda' }
-                ]
-            });
-
-            if (!aportacion) {
-                return res.status(404).json({ success: false, message: 'Aportación no encontrada' });
-            }
-
-            const doc = new PDFDocument({ size: 'A6', margin: 30 });
-            
-            res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `inline; filename=recibo-${aportacion.reciboFolio}.pdf`);
-            
-            doc.pipe(res);
-
-            doc.fontSize(16).font('Helvetica-Bold').text('CELEXPRESS', { align: 'center' });
-            doc.fontSize(12).font('Helvetica').text('RECIBO DE AHORRO', { align: 'center' });
-            doc.moveDown(0.5);
-            
-            doc.moveTo(30, doc.y).lineTo(270, doc.y).stroke();
-            doc.moveDown(0.5);
-
-            doc.fontSize(10);
-            doc.text(`Folio: ${aportacion.reciboFolio}`);
-            doc.text(`Fecha: ${new Date(aportacion.fechaPago).toLocaleDateString('es-MX')}`);
-            doc.moveDown(0.5);
-
-            doc.text(`Participante: ${aportacion.participante.nombre}`);
-            doc.text(`Tanda: ${aportacion.tanda.nombre}`);
-            doc.text(`Turno asignado: #${aportacion.participante.numTurno}`);
-            doc.moveDown(0.5);
-
-            doc.font('Helvetica-Bold');
-            doc.text(`Aportacion: $${parseFloat(aportacion.monto).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
-            doc.font('Helvetica');
-            doc.text(`Periodo: ${aportacion.numPeriodo} de ${aportacion.tanda.numParticipantes}`);
-            doc.text(`Acumulado: $${parseFloat(aportacion.participante.totalAportado).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
-            
-            const restante = parseFloat(aportacion.tanda.montoTurno) - parseFloat(aportacion.participante.totalAportado);
-            doc.text(`Restante: $${restante.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
-            doc.moveDown(0.5);
-
-            doc.text(`Metodo: ${aportacion.metodoPago}`);
-            
-            if (aportacion.participante.fechaEntregaEstimada) {
-                doc.moveDown(0.5);
-                doc.text(`Fecha estimada de entrega:`);
-                doc.font('Helvetica-Bold');
-                doc.text(new Date(aportacion.participante.fechaEntregaEstimada).toLocaleDateString('es-MX'));
-            }
-
-            doc.end();
-
-        } catch (error) {
-            console.error('Error al generar recibo:', error);
-            res.status(500).json({ success: false, error: error.message });
-        }
-    });
-
-    // GET /api/tandas/comprobante/:participanteId - Generar comprobante de entrega PDF
-    router.get('/comprobante/:participanteId', async (req, res) => {
-        try {
-            const participante = await TandaParticipante.findByPk(req.params.participanteId, {
-                include: [{ model: Tanda, as: 'tanda' }]
-            });
-
-            if (!participante) {
-                return res.status(404).json({ success: false, message: 'Participante no encontrado' });
-            }
-
-            if (!participante.entregaRealizada) {
-                return res.status(400).json({ success: false, message: 'Aun no se ha realizado la entrega' });
-            }
-
-            const doc = new PDFDocument({ size: 'A5', margin: 40 });
-            
-            res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `inline; filename=comprobante-entrega-${participante.id}.pdf`);
-            
-            doc.pipe(res);
-
-            doc.fontSize(18).font('Helvetica-Bold').text('CELEXPRESS', { align: 'center' });
-            doc.fontSize(14).font('Helvetica').text('COMPROBANTE DE ENTREGA', { align: 'center' });
-            doc.moveDown();
-            
-            doc.moveTo(40, doc.y).lineTo(360, doc.y).stroke();
-            doc.moveDown();
-
-            const folio = `ENT-${new Date().getFullYear()}-${String(participante.id).padStart(5, '0')}`;
-            doc.fontSize(11);
-            doc.text(`Folio: ${folio}`);
-            doc.text(`Fecha: ${new Date(participante.fechaEntregaReal).toLocaleDateString('es-MX')}`);
-            doc.moveDown();
-
-            doc.font('Helvetica-Bold').text('Beneficiario:', { continued: true });
-            doc.font('Helvetica').text(` ${participante.nombre}`);
-            
-            doc.font('Helvetica-Bold').text('Tanda:', { continued: true });
-            doc.font('Helvetica').text(` ${participante.tanda.nombre}`);
-            
-            doc.font('Helvetica-Bold').text('Turno:', { continued: true });
-            doc.font('Helvetica').text(` #${participante.numTurno}`);
-            doc.moveDown();
-
-            doc.fontSize(14).font('Helvetica-Bold');
-            doc.text('MONTO ENTREGADO:', { align: 'center' });
-            doc.fontSize(20);
-            doc.text(`$${parseFloat(participante.montoEntregado).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`, { align: 'center' });
-            doc.moveDown();
-
-            doc.fontSize(11).font('Helvetica');
-            doc.text(`Total aportado: $${parseFloat(participante.totalAportado).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
-            
-            const pendiente = parseFloat(participante.tanda.montoTurno) - parseFloat(participante.totalAportado);
-            if (pendiente > 0) {
-                doc.text(`Pendiente por aportar: $${pendiente.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`);
-            }
-            doc.moveDown(2);
-
-            doc.text('_______________________          _______________________');
-            doc.text('    Firma participante                      Firma responsable');
-
-            doc.end();
-
-        } catch (error) {
-            console.error('Error al generar comprobante:', error);
-            res.status(500).json({ success: false, error: error.message });
-        }
-    });
-
-    // =========================================================
     // SORTEO DE TURNOS
     // =========================================================
 
-    // POST /api/tandas/:id/sorteo - Realizar sorteo de turnos
     router.post('/:id/sorteo', async (req, res) => {
         let t;
         let committed = false;
@@ -840,7 +850,6 @@ function initTandasRoutes(models, sequelize) {
 
             const participantes = tanda.participantes;
             
-            // Mezclar aleatoriamente (Fisher-Yates)
             const shuffled = [...participantes];
             for (let i = shuffled.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
@@ -868,8 +877,7 @@ function initTandasRoutes(models, sequelize) {
             const tandaActualizada = await Tanda.findByPk(tanda.id, {
                 include: [{
                     model: TandaParticipante,
-                    as: 'participantes',
-                    order: [['numTurno', 'ASC']]
+                    as: 'participantes'
                 }]
             });
 
