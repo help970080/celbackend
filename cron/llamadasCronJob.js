@@ -10,14 +10,12 @@ let cronInterval = null;
 function startLlamadasCronJob(models, sequelize) {
     console.log('🔔 Iniciando cron job de llamadas automáticas...');
 
-    // Ejecutar cada hora
     const INTERVALO = 60 * 60 * 1000; // 1 hora
 
     const ejecutarCiclo = async () => {
         const ahora = new Date();
         console.log(`\n⏰ [CRON LLAMADAS] Verificación: ${ahora.toISOString()}`);
 
-        // Solo ejecutar dentro del horario permitido
         if (!dentroDeHorario()) {
             console.log('   ⏸️ Fuera de horario (9 AM - 6 PM). Saltando...');
             return;
@@ -30,27 +28,27 @@ function startLlamadasCronJob(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
 
-            // Obtener ventas pendientes de llamada
+            // Usar nombres de columna correctos (camelCase con comillas para PostgreSQL)
             const [ventasPendientes] = await sequelize.query(`
                 SELECT 
                     s.id as sale_id,
-                    s.client_id,
+                    s."clientId" as client_id,
                     c.name as client_name,
                     c.phone as telefono,
-                    s.next_payment_date as fecha_vencimiento,
-                    s.weekly_payment as monto_pago,
-                    s.tienda_id,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPayment" as monto_pago,
+                    s."tiendaId" as tienda_id,
                     CASE 
-                        WHEN DATE(s.next_payment_date) = DATE(:manana) THEN 'preventivo'
-                        WHEN DATE(s.next_payment_date) = DATE(:hoy) THEN 'vencimiento'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
                     END as tipo_llamada
                 FROM sales s
-                JOIN clients c ON s.client_id = c.id
+                JOIN clients c ON s."clientId" = c.id
                 WHERE s.status = 'active'
-                AND s.remaining_debt > 0
+                AND s."remainingDebt" > 0
                 AND (
-                    DATE(s.next_payment_date) = DATE(:manana)
-                    OR DATE(s.next_payment_date) = DATE(:hoy)
+                    DATE(s."nextPaymentDate") = DATE(:manana)
+                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
                 )
                 AND c.phone IS NOT NULL
                 AND c.phone != ''
@@ -63,7 +61,6 @@ function startLlamadasCronJob(models, sequelize) {
                 return;
             }
 
-            // Filtrar los que ya recibieron llamada hoy del mismo tipo
             const [llamadasHoy] = await sequelize.query(`
                 SELECT sale_id, tipo FROM llamadas_automaticas WHERE DATE(created_at) = DATE(:hoy)
             `, { replacements: { hoy } });
@@ -94,7 +91,6 @@ function startLlamadasCronJob(models, sequelize) {
                         venta.client_id
                     );
 
-                    // Registrar en base de datos
                     await sequelize.query(`
                         INSERT INTO llamadas_automaticas 
                         (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
@@ -122,7 +118,6 @@ function startLlamadasCronJob(models, sequelize) {
                         console.log(`      ❌ Error: ${resultado.error}`);
                     }
 
-                    // Esperar 3 segundos entre llamadas
                     await new Promise(resolve => setTimeout(resolve, 3000));
 
                 } catch (error) {
@@ -138,8 +133,8 @@ function startLlamadasCronJob(models, sequelize) {
         }
     };
 
-    // Ejecutar inmediatamente al iniciar (si está en horario)
-    setTimeout(ejecutarCiclo, 10000); // Esperar 10 segundos después del inicio
+    // Ejecutar 10 segundos después del inicio
+    setTimeout(ejecutarCiclo, 10000);
 
     // Programar ejecución cada hora
     cronInterval = setInterval(ejecutarCiclo, INTERVALO);

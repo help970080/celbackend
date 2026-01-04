@@ -8,47 +8,7 @@ function initLlamadasRoutes(models, sequelize) {
     const { Sale, Client, Payment, Store, AuditLog } = models;
 
     // =========================================================
-    // TABLA DE REGISTRO DE LLAMADAS (crear si no existe)
-    // =========================================================
-    
-    const initLlamadasTable = async () => {
-        try {
-            await sequelize.query(`
-                CREATE TABLE IF NOT EXISTS llamadas_automaticas (
-                    id SERIAL PRIMARY KEY,
-                    sale_id INTEGER NOT NULL,
-                    client_id INTEGER NOT NULL,
-                    client_name VARCHAR(200),
-                    telefono VARCHAR(50),
-                    monto DECIMAL(10,2),
-                    tipo VARCHAR(20) NOT NULL,
-                    call_sid VARCHAR(100),
-                    status VARCHAR(50) DEFAULT 'initiated',
-                    duration INTEGER DEFAULT 0,
-                    answered_by VARCHAR(50),
-                    error_message TEXT,
-                    fecha_vencimiento DATE,
-                    tienda_id INTEGER,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                
-                CREATE INDEX IF NOT EXISTS idx_llamadas_sale ON llamadas_automaticas(sale_id);
-                CREATE INDEX IF NOT EXISTS idx_llamadas_client ON llamadas_automaticas(client_id);
-                CREATE INDEX IF NOT EXISTS idx_llamadas_status ON llamadas_automaticas(status);
-                CREATE INDEX IF NOT EXISTS idx_llamadas_tipo ON llamadas_automaticas(tipo);
-                CREATE INDEX IF NOT EXISTS idx_llamadas_fecha ON llamadas_automaticas(created_at);
-            `);
-            console.log('✅ Tabla llamadas_automaticas verificada');
-        } catch (error) {
-            console.error('Error creando tabla llamadas:', error);
-        }
-    };
-    
-    initLlamadasTable();
-
-    // =========================================================
-    // WEBHOOK DE TWILIO - Actualizar estado de llamada
+    // WEBHOOK DE TWILIO - Actualizar estado de llamada (SIN AUTH)
     // =========================================================
     
     router.post('/webhook', async (req, res) => {
@@ -94,37 +54,36 @@ function initLlamadasRoutes(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
             
-            // Buscar ventas con próximo pago = mañana (preventivo) o hoy (día de vencimiento)
+            // Usar nombres de columna correctos (camelCase para Sequelize)
             const [ventasPendientes] = await sequelize.query(`
                 SELECT 
                     s.id as sale_id,
-                    s.client_id,
+                    s."clientId" as client_id,
                     c.name as client_name,
                     c.phone as telefono,
-                    s.next_payment_date as fecha_vencimiento,
-                    s.weekly_payment as monto_pago,
-                    s.remaining_debt as deuda_restante,
-                    s.tienda_id,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPayment" as monto_pago,
+                    s."remainingDebt" as deuda_restante,
+                    s."tiendaId" as tienda_id,
                     CASE 
-                        WHEN DATE(s.next_payment_date) = DATE(:manana) THEN 'preventivo'
-                        WHEN DATE(s.next_payment_date) = DATE(:hoy) THEN 'vencimiento'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
                     END as tipo_llamada
                 FROM sales s
-                JOIN clients c ON s.client_id = c.id
+                JOIN clients c ON s."clientId" = c.id
                 WHERE s.status = 'active'
-                AND s.remaining_debt > 0
+                AND s."remainingDebt" > 0
                 AND (
-                    DATE(s.next_payment_date) = DATE(:manana)
-                    OR DATE(s.next_payment_date) = DATE(:hoy)
+                    DATE(s."nextPaymentDate") = DATE(:manana)
+                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
                 )
                 AND c.phone IS NOT NULL
                 AND c.phone != ''
-                ORDER BY s.next_payment_date ASC
+                ORDER BY s."nextPaymentDate" ASC
             `, {
                 replacements: { hoy, manana }
             });
 
-            // Filtrar los que ya recibieron llamada hoy del mismo tipo
             const [llamadasHoy] = await sequelize.query(`
                 SELECT sale_id, tipo 
                 FROM llamadas_automaticas 
@@ -157,7 +116,6 @@ function initLlamadasRoutes(models, sequelize) {
     
     router.post('/ejecutar', async (req, res) => {
         try {
-            // Verificar horario
             if (!dentroDeHorario()) {
                 return res.status(400).json({
                     success: false,
@@ -171,33 +129,31 @@ function initLlamadasRoutes(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
 
-            // Obtener ventas pendientes de llamada
             const [ventasPendientes] = await sequelize.query(`
                 SELECT 
                     s.id as sale_id,
-                    s.client_id,
+                    s."clientId" as client_id,
                     c.name as client_name,
                     c.phone as telefono,
-                    s.next_payment_date as fecha_vencimiento,
-                    s.weekly_payment as monto_pago,
-                    s.tienda_id,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPayment" as monto_pago,
+                    s."tiendaId" as tienda_id,
                     CASE 
-                        WHEN DATE(s.next_payment_date) = DATE(:manana) THEN 'preventivo'
-                        WHEN DATE(s.next_payment_date) = DATE(:hoy) THEN 'vencimiento'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
                     END as tipo_llamada
                 FROM sales s
-                JOIN clients c ON s.client_id = c.id
+                JOIN clients c ON s."clientId" = c.id
                 WHERE s.status = 'active'
-                AND s.remaining_debt > 0
+                AND s."remainingDebt" > 0
                 AND (
-                    DATE(s.next_payment_date) = DATE(:manana)
-                    OR DATE(s.next_payment_date) = DATE(:hoy)
+                    DATE(s."nextPaymentDate") = DATE(:manana)
+                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
                 )
                 AND c.phone IS NOT NULL
                 AND c.phone != ''
             `, { replacements: { hoy, manana } });
 
-            // Filtrar ya llamados hoy
             const [llamadasHoy] = await sequelize.query(`
                 SELECT sale_id, tipo FROM llamadas_automaticas WHERE DATE(created_at) = DATE(:hoy)
             `, { replacements: { hoy } });
@@ -217,7 +173,6 @@ function initLlamadasRoutes(models, sequelize) {
             let exitosas = 0;
             let fallidas = 0;
 
-            // Ejecutar llamadas con delay entre cada una
             for (const venta of pendientes) {
                 try {
                     const resultado = await realizarLlamada(
@@ -229,7 +184,6 @@ function initLlamadasRoutes(models, sequelize) {
                         venta.client_id
                     );
 
-                    // Registrar en base de datos
                     await sequelize.query(`
                         INSERT INTO llamadas_automaticas 
                         (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
@@ -256,8 +210,6 @@ function initLlamadasRoutes(models, sequelize) {
                     }
 
                     resultados.push(resultado);
-
-                    // Esperar 2 segundos entre llamadas para no saturar
                     await new Promise(resolve => setTimeout(resolve, 2000));
 
                 } catch (error) {
@@ -271,15 +223,16 @@ function initLlamadasRoutes(models, sequelize) {
                 }
             }
 
-            // Auditoría
             if (AuditLog) {
-                await AuditLog.create({
-                    tabla: 'llamadas_automaticas',
-                    accion: 'EJECUTAR LLAMADAS',
-                    descripcion: `Llamadas ejecutadas: ${exitosas} exitosas, ${fallidas} fallidas`,
-                    usuarioId: req.user?.id,
-                    tienda_id: req.user?.tiendaId
-                });
+                try {
+                    await AuditLog.create({
+                        tabla: 'llamadas_automaticas',
+                        accion: 'EJECUTAR LLAMADAS',
+                        descripcion: `Llamadas ejecutadas: ${exitosas} exitosas, ${fallidas} fallidas`,
+                        usuarioId: req.user?.id,
+                        tienda_id: req.user?.tiendaId
+                    });
+                } catch (e) {}
             }
 
             res.json({
@@ -303,19 +256,19 @@ function initLlamadasRoutes(models, sequelize) {
     router.post('/llamar/:saleId', async (req, res) => {
         try {
             const { saleId } = req.params;
-            const { tipo } = req.body; // 'preventivo' o 'vencimiento'
+            const { tipo } = req.body;
 
             const [ventas] = await sequelize.query(`
                 SELECT 
                     s.id as sale_id,
-                    s.client_id,
+                    s."clientId" as client_id,
                     c.name as client_name,
                     c.phone as telefono,
-                    s.next_payment_date as fecha_vencimiento,
-                    s.weekly_payment as monto_pago,
-                    s.tienda_id
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPayment" as monto_pago,
+                    s."tiendaId" as tienda_id
                 FROM sales s
-                JOIN clients c ON s.client_id = c.id
+                JOIN clients c ON s."clientId" = c.id
                 WHERE s.id = :saleId
             `, { replacements: { saleId } });
 
@@ -338,7 +291,6 @@ function initLlamadasRoutes(models, sequelize) {
                 venta.client_id
             );
 
-            // Registrar
             await sequelize.query(`
                 INSERT INTO llamadas_automaticas 
                 (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
@@ -396,9 +348,7 @@ function initLlamadasRoutes(models, sequelize) {
             }
 
             const [llamadas] = await sequelize.query(`
-                SELECT 
-                    l.*,
-                    s.product_name
+                SELECT l.*, s."productName" as product_name
                 FROM llamadas_automaticas l
                 LEFT JOIN sales s ON l.sale_id = s.id
                 WHERE ${whereClause}
@@ -410,7 +360,6 @@ function initLlamadasRoutes(models, sequelize) {
                 SELECT COUNT(*) as total FROM llamadas_automaticas l WHERE ${whereClause}
             `, { replacements });
 
-            // Estadísticas del día
             const hoy = new Date();
             const [[statsHoy]] = await sequelize.query(`
                 SELECT 
@@ -461,7 +410,6 @@ function initLlamadasRoutes(models, sequelize) {
                 FROM llamadas_automaticas
             `);
 
-            // Por día últimos 7 días
             const [porDia] = await sequelize.query(`
                 SELECT 
                     DATE(created_at) as fecha,
