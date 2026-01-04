@@ -1,4 +1,4 @@
-// server.js - CON INTEGRACIÓN MDM COMPLETA + TANDAS
+// server.js - CON INTEGRACIÓN MDM + TANDAS + LLAMADAS AUTOMÁTICAS TWILIO
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -168,7 +168,6 @@ sequelize.authenticate()
     try {
       console.log('🔄 Verificando tablas de Tandas...');
       
-      // Tabla principal de tandas
       await sequelize.query(`
         CREATE TABLE IF NOT EXISTS tandas (
           id SERIAL PRIMARY KEY,
@@ -188,12 +187,10 @@ sequelize.authenticate()
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        
         CREATE INDEX IF NOT EXISTS idx_tandas_tienda ON tandas(tienda_id);
         CREATE INDEX IF NOT EXISTS idx_tandas_estado ON tandas(estado);
       `);
       
-      // Tabla de participantes
       await sequelize.query(`
         CREATE TABLE IF NOT EXISTS tanda_participantes (
           id SERIAL PRIMARY KEY,
@@ -213,12 +210,10 @@ sequelize.authenticate()
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        
         CREATE INDEX IF NOT EXISTS idx_tanda_participantes_tanda ON tanda_participantes(tanda_id);
         CREATE INDEX IF NOT EXISTS idx_tanda_participantes_turno ON tanda_participantes(num_turno);
       `);
       
-      // Tabla de aportaciones
       await sequelize.query(`
         CREATE TABLE IF NOT EXISTS tanda_aportaciones (
           id SERIAL PRIMARY KEY,
@@ -235,13 +230,11 @@ sequelize.authenticate()
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        
         CREATE INDEX IF NOT EXISTS idx_tanda_aportaciones_tanda ON tanda_aportaciones(tanda_id);
         CREATE INDEX IF NOT EXISTS idx_tanda_aportaciones_participante ON tanda_aportaciones(participante_id);
         CREATE INDEX IF NOT EXISTS idx_tanda_aportaciones_periodo ON tanda_aportaciones(num_periodo);
       `);
       
-      // Tabla de configuración financiera
       await sequelize.query(`
         CREATE TABLE IF NOT EXISTS config_financiera (
           id SERIAL PRIMARY KEY,
@@ -257,13 +250,50 @@ sequelize.authenticate()
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        
         CREATE INDEX IF NOT EXISTS idx_config_financiera_tienda ON config_financiera(tienda_id);
       `);
       
       console.log('✅ Tablas de Tandas verificadas');
     } catch (e) {
       console.error('❌ Error con tablas de Tandas:', e.message);
+    }
+
+    // =========================================================
+    // ⭐ LLAMADAS AUTOMÁTICAS: CREAR TABLA
+    // =========================================================
+    try {
+      console.log('🔄 Verificando tabla llamadas_automaticas...');
+      
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS llamadas_automaticas (
+          id SERIAL PRIMARY KEY,
+          sale_id INTEGER NOT NULL,
+          client_id INTEGER NOT NULL,
+          client_name VARCHAR(200),
+          telefono VARCHAR(50),
+          monto DECIMAL(10,2),
+          tipo VARCHAR(20) NOT NULL,
+          call_sid VARCHAR(100),
+          status VARCHAR(50) DEFAULT 'initiated',
+          duration INTEGER DEFAULT 0,
+          answered_by VARCHAR(50),
+          error_message TEXT,
+          fecha_vencimiento DATE,
+          tienda_id INTEGER,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_llamadas_sale ON llamadas_automaticas(sale_id);
+        CREATE INDEX IF NOT EXISTS idx_llamadas_client ON llamadas_automaticas(client_id);
+        CREATE INDEX IF NOT EXISTS idx_llamadas_status ON llamadas_automaticas(status);
+        CREATE INDEX IF NOT EXISTS idx_llamadas_tipo ON llamadas_automaticas(tipo);
+        CREATE INDEX IF NOT EXISTS idx_llamadas_fecha ON llamadas_automaticas(created_at);
+      `);
+      
+      console.log('✅ Tabla llamadas_automaticas verificada');
+    } catch (e) {
+      console.error('❌ Error con tabla llamadas_automaticas:', e.message);
     }
 
     // CORS - DEBE IR PRIMERO
@@ -274,8 +304,11 @@ sequelize.authenticate()
       allowedHeaders: ['Content-Type', 'Authorization']
     }));
 
-    // JSON parser - DESPUÉS de CORS
+    // JSON parser
     app.use(express.json());
+    
+    // Parser para webhooks de Twilio (URL-encoded)
+    app.use(express.urlencoded({ extended: true }));
 
     // Log de peticiones
     app.use((req, res, next) => {
@@ -315,7 +348,6 @@ sequelize.authenticate()
     const initClientRoutes = require('./routes/clientRoutes');
     app.use('/api/clients', authMiddleware, initClientRoutes(models));
 
-    // Rutas de documentos de cliente (INE, selfie, verificación facial)
     const initClientDocumentsRoutes = require('./routes/clientDocumentsRoutes');
     app.use('/api/clients', authMiddleware, initClientDocumentsRoutes(models));
 
@@ -352,7 +384,6 @@ sequelize.authenticate()
     const initMdmAutoBlockRoutes = require('./services/mdmAutoBlockRoutes');
     app.use('/api/mdm-auto', authMiddleware, initMdmAutoBlockRoutes(models));
 
-    // ⭐ RUTAS MDM ADMIN - PANEL DE CUENTAS (Solo Super Admin)
     const initMdmAdminRoutes = require('./services/mdmAdminRoutes');
     app.use('/api/mdm-admin', authMiddleware, initMdmAdminRoutes(models));
 
@@ -362,15 +393,26 @@ sequelize.authenticate()
     // ⭐ RUTAS TANDAS / CAJA DE AHORRO
     // =========================================================
     const initTandasRoutes = require('./routes/tandasRoutes');
-   app.use('/api/tandas', initTandasRoutes(models, sequelize, authMiddleware));
+    app.use('/api/tandas', initTandasRoutes(models, sequelize, authMiddleware));
     console.log('✅ Rutas de Tandas montadas.');
 
     // =========================================================
-    // ⭐ CRON JOB MDM - BLOQUEO AUTOMÁTICO ACTIVADO
+    // ⭐ RUTAS LLAMADAS AUTOMÁTICAS - TWILIO
+    // =========================================================
+    const initLlamadasRoutes = require('./routes/llamadasRoutes');
+    app.use('/api/llamadas', authMiddleware, initLlamadasRoutes(models, sequelize));
+    console.log('✅ Rutas de Llamadas Automáticas montadas.');
+
+    // =========================================================
+    // ⭐ CRON JOBS
     // =========================================================
     const { startCronJob } = require('./cron/mdmCronJob');
-    startCronJob(models, 3600000); // Pasar models y verificar cada hora
+    startCronJob(models, 3600000);
     console.log('✅ Cron job MDM iniciado (verificación cada hora).');
+
+    const { startLlamadasCronJob } = require('./cron/llamadasCronJob');
+    startLlamadasCronJob(models, sequelize);
+    console.log('✅ Cron job Llamadas Automáticas iniciado (9 AM - 6 PM).');
 
     console.log('✅ Todas las rutas principales han sido montadas.');
     app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
