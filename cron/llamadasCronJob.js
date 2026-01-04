@@ -1,0 +1,158 @@
+// cron/llamadasCronJob.js - Ejecuta llamadas automáticas diariamente
+const { realizarLlamada, dentroDeHorario } = require('../services/twilioCallService');
+
+let cronInterval = null;
+
+/**
+ * Inicia el cron job de llamadas automáticas
+ * Se ejecuta cada hora entre 9 AM y 6 PM
+ */
+function startLlamadasCronJob(models, sequelize) {
+    console.log('🔔 Iniciando cron job de llamadas automáticas...');
+
+    // Ejecutar cada hora
+    const INTERVALO = 60 * 60 * 1000; // 1 hora
+
+    const ejecutarCiclo = async () => {
+        const ahora = new Date();
+        console.log(`\n⏰ [CRON LLAMADAS] Verificación: ${ahora.toISOString()}`);
+
+        // Solo ejecutar dentro del horario permitido
+        if (!dentroDeHorario()) {
+            console.log('   ⏸️ Fuera de horario (9 AM - 6 PM). Saltando...');
+            return;
+        }
+
+        try {
+            const hoy = new Date();
+            hoy.setHours(0, 0, 0, 0);
+            
+            const manana = new Date(hoy);
+            manana.setDate(manana.getDate() + 1);
+
+            // Obtener ventas pendientes de llamada
+            const [ventasPendientes] = await sequelize.query(`
+                SELECT 
+                    s.id as sale_id,
+                    s.client_id,
+                    c.name as client_name,
+                    c.phone as telefono,
+                    s.next_payment_date as fecha_vencimiento,
+                    s.weekly_payment as monto_pago,
+                    s.tienda_id,
+                    CASE 
+                        WHEN DATE(s.next_payment_date) = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s.next_payment_date) = DATE(:hoy) THEN 'vencimiento'
+                    END as tipo_llamada
+                FROM sales s
+                JOIN clients c ON s.client_id = c.id
+                WHERE s.status = 'active'
+                AND s.remaining_debt > 0
+                AND (
+                    DATE(s.next_payment_date) = DATE(:manana)
+                    OR DATE(s.next_payment_date) = DATE(:hoy)
+                )
+                AND c.phone IS NOT NULL
+                AND c.phone != ''
+            `, { replacements: { hoy, manana } });
+
+            console.log(`   📋 Ventas con pagos próximos: ${ventasPendientes.length}`);
+
+            if (ventasPendientes.length === 0) {
+                console.log('   ✅ No hay llamadas pendientes');
+                return;
+            }
+
+            // Filtrar los que ya recibieron llamada hoy del mismo tipo
+            const [llamadasHoy] = await sequelize.query(`
+                SELECT sale_id, tipo FROM llamadas_automaticas WHERE DATE(created_at) = DATE(:hoy)
+            `, { replacements: { hoy } });
+
+            const llamadasSet = new Set(llamadasHoy.map(l => `${l.sale_id}-${l.tipo}`));
+            const pendientes = ventasPendientes.filter(v => !llamadasSet.has(`${v.sale_id}-${v.tipo_llamada}`));
+
+            console.log(`   📞 Llamadas a ejecutar: ${pendientes.length}`);
+
+            if (pendientes.length === 0) {
+                console.log('   ✅ Todas las llamadas del día ya fueron realizadas');
+                return;
+            }
+
+            let exitosas = 0;
+            let fallidas = 0;
+
+            for (const venta of pendientes) {
+                try {
+                    console.log(`   📞 Llamando a ${venta.client_name} (${venta.telefono})...`);
+                    
+                    const resultado = await realizarLlamada(
+                        venta.telefono,
+                        venta.client_name,
+                        venta.monto_pago,
+                        venta.tipo_llamada,
+                        venta.sale_id,
+                        venta.client_id
+                    );
+
+                    // Registrar en base de datos
+                    await sequelize.query(`
+                        INSERT INTO llamadas_automaticas 
+                        (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
+                        VALUES (:saleId, :clientId, :clientName, :telefono, :monto, :tipo, :callSid, :status, :fechaVencimiento, :tiendaId)
+                    `, {
+                        replacements: {
+                            saleId: venta.sale_id,
+                            clientId: venta.client_id,
+                            clientName: venta.client_name,
+                            telefono: venta.telefono,
+                            monto: venta.monto_pago,
+                            tipo: venta.tipo_llamada,
+                            callSid: resultado.callSid || null,
+                            status: resultado.success ? 'initiated' : 'failed',
+                            fechaVencimiento: venta.fecha_vencimiento,
+                            tiendaId: venta.tienda_id
+                        }
+                    });
+
+                    if (resultado.success) {
+                        exitosas++;
+                        console.log(`      ✅ Llamada iniciada: ${resultado.callSid}`);
+                    } else {
+                        fallidas++;
+                        console.log(`      ❌ Error: ${resultado.error}`);
+                    }
+
+                    // Esperar 3 segundos entre llamadas
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+
+                } catch (error) {
+                    console.error(`      ❌ Error con ${venta.client_name}:`, error.message);
+                    fallidas++;
+                }
+            }
+
+            console.log(`\n   📊 Resumen: ${exitosas} exitosas, ${fallidas} fallidas`);
+
+        } catch (error) {
+            console.error('❌ [CRON LLAMADAS] Error:', error);
+        }
+    };
+
+    // Ejecutar inmediatamente al iniciar (si está en horario)
+    setTimeout(ejecutarCiclo, 10000); // Esperar 10 segundos después del inicio
+
+    // Programar ejecución cada hora
+    cronInterval = setInterval(ejecutarCiclo, INTERVALO);
+
+    console.log('✅ Cron job de llamadas programado (cada hora, 9 AM - 6 PM)');
+}
+
+function stopLlamadasCronJob() {
+    if (cronInterval) {
+        clearInterval(cronInterval);
+        cronInterval = null;
+        console.log('🛑 Cron job de llamadas detenido');
+    }
+}
+
+module.exports = { startLlamadasCronJob, stopLlamadasCronJob };
