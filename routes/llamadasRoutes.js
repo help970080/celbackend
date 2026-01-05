@@ -1,6 +1,5 @@
 // routes/llamadasRoutes.js - Rutas para llamadas automáticas de cobranza preventiva
 const express = require('express');
-const { Op } = require('sequelize');
 const { realizarLlamada, dentroDeHorario, proximaVentanaLlamadas } = require('../services/twilioCallService');
 
 function initLlamadasRoutes(models, sequelize) {
@@ -43,7 +42,7 @@ function initLlamadasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // OBTENER PAGOS PRÓXIMOS A VENCER
+    // OBTENER PAGOS PRÓXIMOS A VENCER (VERSIÓN CALCULADA)
     // =========================================================
     
     router.get('/pendientes', async (req, res) => {
@@ -54,35 +53,87 @@ function initLlamadasRoutes(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
             
-            // Usar nombres de columna correctos (camelCase para Sequelize)
-            const [ventasPendientes] = await sequelize.query(`
-                SELECT 
-                    s.id as sale_id,
-                    s."clientId" as client_id,
-                    c.name as client_name,
-                    c.phone as telefono,
-                    s."nextPaymentDate" as fecha_vencimiento,
-                    s."weeklyPayment" as monto_pago,
-                    s."remainingDebt" as deuda_restante,
-                    s."tiendaId" as tienda_id,
-                    CASE 
-                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
-                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
-                    END as tipo_llamada
-                FROM sales s
-                JOIN clients c ON s."clientId" = c.id
-                WHERE s.status = 'active'
-                AND s."remainingDebt" > 0
-                AND (
-                    DATE(s."nextPaymentDate") = DATE(:manana)
-                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
-                )
-                AND c.phone IS NOT NULL
-                AND c.phone != ''
-                ORDER BY s."nextPaymentDate" ASC
-            `, {
-                replacements: { hoy, manana }
-            });
+            // PRIMERO: Verificar si la columna nextPaymentDate existe
+            const [columnCheck] = await sequelize.query(`
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'sales' 
+                AND column_name = 'nextPaymentDate'
+            `);
+            
+            const tieneNextPaymentDate = columnCheck.length > 0;
+            
+            let query;
+            let replacements = { hoy, manana };
+            
+            if (tieneNextPaymentDate) {
+                // Si la columna existe, usarla
+                query = `
+                    SELECT 
+                        s.id as sale_id,
+                        s."clientId" as client_id,
+                        c.name as client_name,
+                        c.phone as telefono,
+                        s."nextPaymentDate" as fecha_vencimiento,
+                        s."weeklyPaymentAmount" as monto_pago,
+                        s."balanceDue" as deuda_restante,
+                        s."tienda_id" as tienda_id,
+                        CASE 
+                            WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                            WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
+                        END as tipo_llamada
+                    FROM sales s
+                    JOIN clients c ON s."clientId" = c.id
+                    WHERE s.status = 'active'
+                    AND s."balanceDue" > 0
+                    AND (
+                        DATE(s."nextPaymentDate") = DATE(:manana)
+                        OR DATE(s."nextPaymentDate") = DATE(:hoy)
+                    )
+                    AND c.phone IS NOT NULL
+                    AND c.phone != ''
+                    ORDER BY s."nextPaymentDate" ASC
+                `;
+            } else {
+                // Si NO existe, calcular basado en saleDate y weeklyPaymentAmount
+                query = `
+                    SELECT 
+                        s.id as sale_id,
+                        s."clientId" as client_id,
+                        c.name as client_name,
+                        c.phone as telefono,
+                        -- Calcular próxima fecha de pago (cada 7 días desde saleDate)
+                        (s."saleDate" + INTERVAL '7 days' * 
+                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                        )::DATE as fecha_vencimiento,
+                        s."weeklyPaymentAmount" as monto_pago,
+                        s."balanceDue" as deuda_restante,
+                        s."tienda_id" as tienda_id,
+                        CASE 
+                            WHEN (s."saleDate" + INTERVAL '7 days' * 
+                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                            )::DATE = DATE(:manana) THEN 'preventivo'
+                            WHEN (s."saleDate" + INTERVAL '7 days' * 
+                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                            )::DATE = DATE(:hoy) THEN 'vencimiento'
+                        END as tipo_llamada
+                    FROM sales s
+                    JOIN clients c ON s."clientId" = c.id
+                    WHERE s.status = 'active'
+                    AND s."balanceDue" > 0
+                    AND s."weeklyPaymentAmount" > 0
+                    AND c.phone IS NOT NULL
+                    AND c.phone != ''
+                    HAVING 
+                        (s."saleDate" + INTERVAL '7 days' * 
+                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                        )::DATE IN (DATE(:hoy), DATE(:manana))
+                    ORDER BY fecha_vencimiento ASC
+                `;
+            }
+            
+            const [ventasPendientes] = await sequelize.query(query, { replacements });
+            console.log(`📋 Ventas pendientes encontradas: ${ventasPendientes.length}`);
 
             const [llamadasHoy] = await sequelize.query(`
                 SELECT sale_id, tipo 
@@ -101,7 +152,8 @@ function initLlamadasRoutes(models, sequelize) {
                 total: pendientesFiltrados.length,
                 dentroDeHorario: dentroDeHorario(),
                 proximaVentana: proximaVentanaLlamadas(),
-                pendientes: pendientesFiltrados
+                pendientes: pendientesFiltrados,
+                calculadoDinamicamente: !tieneNextPaymentDate
             });
 
         } catch (error) {
@@ -129,30 +181,79 @@ function initLlamadasRoutes(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
 
-            const [ventasPendientes] = await sequelize.query(`
-                SELECT 
-                    s.id as sale_id,
-                    s."clientId" as client_id,
-                    c.name as client_name,
-                    c.phone as telefono,
-                    s."nextPaymentDate" as fecha_vencimiento,
-                    s."weeklyPayment" as monto_pago,
-                    s."tiendaId" as tienda_id,
-                    CASE 
-                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
-                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
-                    END as tipo_llamada
-                FROM sales s
-                JOIN clients c ON s."clientId" = c.id
-                WHERE s.status = 'active'
-                AND s."remainingDebt" > 0
-                AND (
-                    DATE(s."nextPaymentDate") = DATE(:manana)
-                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
-                )
-                AND c.phone IS NOT NULL
-                AND c.phone != ''
-            `, { replacements: { hoy, manana } });
+            // Verificar si la columna existe
+            const [columnCheck] = await sequelize.query(`
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'sales' 
+                AND column_name = 'nextPaymentDate'
+            `);
+            
+            const tieneNextPaymentDate = columnCheck.length > 0;
+            
+            let query;
+            let replacements = { hoy, manana };
+            
+            if (tieneNextPaymentDate) {
+                query = `
+                    SELECT 
+                        s.id as sale_id,
+                        s."clientId" as client_id,
+                        c.name as client_name,
+                        c.phone as telefono,
+                        s."nextPaymentDate" as fecha_vencimiento,
+                        s."weeklyPaymentAmount" as monto_pago,
+                        s."tienda_id" as tienda_id,
+                        CASE 
+                            WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                            WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
+                        END as tipo_llamada
+                    FROM sales s
+                    JOIN clients c ON s."clientId" = c.id
+                    WHERE s.status = 'active'
+                    AND s."balanceDue" > 0
+                    AND (
+                        DATE(s."nextPaymentDate") = DATE(:manana)
+                        OR DATE(s."nextPaymentDate") = DATE(:hoy)
+                    )
+                    AND c.phone IS NOT NULL
+                    AND c.phone != ''
+                `;
+            } else {
+                query = `
+                    SELECT 
+                        s.id as sale_id,
+                        s."clientId" as client_id,
+                        c.name as client_name,
+                        c.phone as telefono,
+                        (s."saleDate" + INTERVAL '7 days' * 
+                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                        )::DATE as fecha_vencimiento,
+                        s."weeklyPaymentAmount" as monto_pago,
+                        s."tienda_id" as tienda_id,
+                        CASE 
+                            WHEN (s."saleDate" + INTERVAL '7 days' * 
+                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                            )::DATE = DATE(:manana) THEN 'preventivo'
+                            WHEN (s."saleDate" + INTERVAL '7 days' * 
+                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                            )::DATE = DATE(:hoy) THEN 'vencimiento'
+                        END as tipo_llamada
+                    FROM sales s
+                    JOIN clients c ON s."clientId" = c.id
+                    WHERE s.status = 'active'
+                    AND s."balanceDue" > 0
+                    AND s."weeklyPaymentAmount" > 0
+                    AND c.phone IS NOT NULL
+                    AND c.phone != ''
+                    HAVING 
+                        (s."saleDate" + INTERVAL '7 days' * 
+                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
+                        )::DATE IN (DATE(:hoy), DATE(:manana))
+                `;
+            }
+
+            const [ventasPendientes] = await sequelize.query(query, { replacements });
 
             const [llamadasHoy] = await sequelize.query(`
                 SELECT sale_id, tipo FROM llamadas_automaticas WHERE DATE(created_at) = DATE(:hoy)
@@ -264,9 +365,8 @@ function initLlamadasRoutes(models, sequelize) {
                     s."clientId" as client_id,
                     c.name as client_name,
                     c.phone as telefono,
-                    s."nextPaymentDate" as fecha_vencimiento,
-                    s."weeklyPayment" as monto_pago,
-                    s."tiendaId" as tienda_id
+                    s."weeklyPaymentAmount" as monto_pago,
+                    s."tienda_id" as tienda_id
                 FROM sales s
                 JOIN clients c ON s."clientId" = c.id
                 WHERE s.id = :saleId
@@ -293,8 +393,8 @@ function initLlamadasRoutes(models, sequelize) {
 
             await sequelize.query(`
                 INSERT INTO llamadas_automaticas 
-                (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
-                VALUES (:saleId, :clientId, :clientName, :telefono, :monto, :tipo, :callSid, :status, :fechaVencimiento, :tiendaId)
+                (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, tienda_id)
+                VALUES (:saleId, :clientId, :clientName, :telefono, :monto, :tipo, :callSid, :status, :tiendaId)
             `, {
                 replacements: {
                     saleId: venta.sale_id,
@@ -305,7 +405,6 @@ function initLlamadasRoutes(models, sequelize) {
                     tipo: tipo || 'preventivo',
                     callSid: resultado.callSid || null,
                     status: resultado.success ? 'initiated' : 'failed',
-                    fechaVencimiento: venta.fecha_vencimiento,
                     tiendaId: venta.tienda_id
                 }
             });
@@ -323,7 +422,7 @@ function initLlamadasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // HISTORIAL DE LLAMADAS
+    // HISTORIAL DE LLAMADAS (sin cambios)
     // =========================================================
     
     router.get('/historial', async (req, res) => {
@@ -348,7 +447,7 @@ function initLlamadasRoutes(models, sequelize) {
             }
 
             const [llamadas] = await sequelize.query(`
-                SELECT l.*, s."productName" as product_name
+                SELECT l.*, s."weeklyPaymentAmount" as monto_pago
                 FROM llamadas_automaticas l
                 LEFT JOIN sales s ON l.sale_id = s.id
                 WHERE ${whereClause}
@@ -390,7 +489,7 @@ function initLlamadasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // ESTADÍSTICAS GENERALES
+    // ESTADÍSTICAS GENERALES (sin cambios)
     // =========================================================
     
     router.get('/estadisticas', async (req, res) => {
