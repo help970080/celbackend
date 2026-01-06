@@ -106,11 +106,12 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     saleItemsToCreate.push({ productId: item.productId, quantity: item.quantity, priceAtSale: product.price });
                 }
 
+                // ⭐ Ventas a crédito se activan automáticamente con nextPaymentDate
                 const saleData = { 
                     clientId, 
                     totalAmount, 
                     isCredit: !!isCredit, 
-                    status: isCredit ? 'pending_credit' : 'completed', 
+                    status: isCredit ? 'active' : 'completed',  // ⭐ ACTIVO desde el inicio
                     assignedCollectorId: isCredit && assignedCollectorId ? parseInt(assignedCollectorId) : null,
                     tiendaId: req.user.tiendaId,
                     paymentsMade: 0
@@ -128,13 +129,18 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     }
 
                     const balance = totalAmount - downPaymentFloat;
+                    const frecuencia = paymentFrequency || 'weekly';
+
+                    // ⭐ Calcular primera fecha de pago automáticamente
+                    const primeraFechaPago = calcularProximaFechaPago(new Date(), frecuencia, 0);
 
                     Object.assign(saleData, {
                         downPayment: downPaymentFloat,
                         balanceDue: balance,
-                        paymentFrequency: paymentFrequency || 'weekly',
+                        paymentFrequency: frecuencia,
                         numberOfPayments: numPaymentsInt,
-                        weeklyPaymentAmount: parseFloat((balance / numPaymentsInt).toFixed(2))
+                        weeklyPaymentAmount: parseFloat((balance / numPaymentsInt).toFixed(2)),
+                        nextPaymentDate: primeraFechaPago  // ⭐ ASIGNAR AUTOMÁTICAMENTE
                     });
                 } else {
                     Object.assign(saleData, { downPayment: totalAmount, balanceDue: 0 });
