@@ -1,10 +1,8 @@
 // services/backupService.js - Backup automático a Google Drive
 const { google } = require('googleapis');
-const { exec } = require('child_process');
+const { Sequelize } = require('sequelize');
 const fs = require('fs');
 const path = require('path');
-const util = require('util');
-const execPromise = util.promisify(exec);
 
 // Configuración de Google Drive
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '1gAXqEu3BDH8QoCDT2wrdIyC0gytioSQP';
@@ -13,12 +11,9 @@ const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '1gAXqEu3BD
 function getGoogleCredentials() {
     let privateKey = process.env.GOOGLE_PRIVATE_KEY || "";
     
-    // Manejar diferentes formatos de la key
     if (privateKey) {
-        // Si viene con \\n literal, convertir a saltos de línea reales
         privateKey = privateKey.replace(/\\n/g, '\n');
         
-        // Si no tiene los headers, agregarlos
         if (!privateKey.includes('-----BEGIN')) {
             privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----\n`;
         }
@@ -67,14 +62,15 @@ async function uploadToGoogleDrive(filePath, fileName) {
         };
 
         const media = {
-            mimeType: 'application/sql',
+            mimeType: 'application/json',
             body: fs.createReadStream(filePath)
         };
 
         const response = await drive.files.create({
             requestBody: fileMetadata,
             media: media,
-            fields: 'id, name, webViewLink'
+            fields: 'id, name, webViewLink',
+            supportsAllDrives: true
         });
 
         console.log(`✅ Backup subido a Google Drive: ${response.data.name}`);
@@ -93,15 +89,14 @@ async function uploadToGoogleDrive(filePath, fileName) {
 }
 
 /**
- * Crear backup de la base de datos
+ * Crear backup de la base de datos usando Sequelize
  */
 async function createDatabaseBackup() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const fileName = `celexpress-backup-${timestamp}.sql`;
+    const fileName = `celexpress-backup-${timestamp}.json`;
     const filePath = path.join('/tmp', fileName);
 
     try {
-        // Obtener DATABASE_URL
         const databaseUrl = process.env.DATABASE_URL;
         if (!databaseUrl) {
             throw new Error('DATABASE_URL no está configurada');
@@ -110,14 +105,55 @@ async function createDatabaseBackup() {
         console.log(`🔄 Iniciando backup de base de datos...`);
         console.log(`   Archivo: ${fileName}`);
 
-        // Ejecutar pg_dump
-        const command = `pg_dump "${databaseUrl}" -f "${filePath}"`;
-        await execPromise(command);
+        // Conectar a la base de datos
+        const sequelize = new Sequelize(databaseUrl, {
+            dialect: 'postgres',
+            protocol: 'postgres',
+            dialectOptions: { ssl: { require: true, rejectUnauthorized: false } },
+            logging: false
+        });
 
-        // Verificar que el archivo existe
-        if (!fs.existsSync(filePath)) {
-            throw new Error('El archivo de backup no se creó');
+        // Obtener lista de tablas
+        const [tables] = await sequelize.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_type = 'BASE TABLE'
+            ORDER BY table_name;
+        `);
+
+        console.log(`   📋 Tablas encontradas: ${tables.length}`);
+
+        // Exportar cada tabla
+        const backupData = {
+            metadata: {
+                createdAt: new Date().toISOString(),
+                database: 'celexpress',
+                tables: tables.length
+            },
+            tables: {}
+        };
+
+        for (const table of tables) {
+            const tableName = table.table_name;
+            try {
+                const [rows] = await sequelize.query(`SELECT * FROM "${tableName}"`);
+                backupData.tables[tableName] = {
+                    count: rows.length,
+                    data: rows
+                };
+                console.log(`   ✅ ${tableName}: ${rows.length} registros`);
+            } catch (e) {
+                console.log(`   ⚠️ ${tableName}: Error - ${e.message}`);
+                backupData.tables[tableName] = { count: 0, data: [], error: e.message };
+            }
         }
+
+        // Cerrar conexión
+        await sequelize.close();
+
+        // Guardar archivo JSON
+        fs.writeFileSync(filePath, JSON.stringify(backupData, null, 2));
 
         const stats = fs.statSync(filePath);
         console.log(`✅ Backup creado: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
@@ -184,9 +220,10 @@ async function listBackups() {
 
         const response = await drive.files.list({
             q: `'${GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed = false`,
-            fields: 'files(id, name, createdTime, size)',
+            fields: 'files(id, name, createdTime, size, webViewLink)',
             orderBy: 'createdTime desc',
-            pageSize: 30
+            pageSize: 30,
+            supportsAllDrives: true
         });
 
         return {
@@ -195,7 +232,8 @@ async function listBackups() {
                 id: file.id,
                 name: file.name,
                 createdAt: file.createdTime,
-                size: file.size ? `${(parseInt(file.size) / 1024 / 1024).toFixed(2)} MB` : 'N/A'
+                size: file.size ? `${(parseInt(file.size) / 1024 / 1024).toFixed(2)} MB` : 'N/A',
+                link: file.webViewLink
             }))
         };
     } catch (error) {
