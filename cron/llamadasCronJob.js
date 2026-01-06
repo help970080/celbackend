@@ -28,80 +28,31 @@ function startLlamadasCronJob(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
 
-            // Verificar si nextPaymentDate existe
-            const [columnCheck] = await sequelize.query(`
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'sales' 
-                AND column_name = 'nextPaymentDate'
-            `);
-            
-            const tieneNextPaymentDate = columnCheck.length > 0;
-            
-            let query;
-            let replacements = { hoy, manana };
-            
-            if (tieneNextPaymentDate) {
-                query = `
-                    SELECT 
-                        s.id as sale_id,
-                        s."clientId" as client_id,
-                        c.name as client_name,
-                        c.phone as telefono,
-                        s."nextPaymentDate" as fecha_vencimiento,
-                        s."weeklyPaymentAmount" as monto_pago,
-                        s."tienda_id" as tienda_id,
-                        CASE 
-                            WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
-                            WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
-                        END as tipo_llamada
-                    FROM sales s
-                    JOIN clients c ON s."clientId" = c.id
-                    WHERE s.status = 'active'
-                    AND s."balanceDue" > 0
-                    AND (
-                        DATE(s."nextPaymentDate") = DATE(:manana)
-                        OR DATE(s."nextPaymentDate") = DATE(:hoy)
-                    )
-                    AND c.phone IS NOT NULL
-                    AND c.phone != ''
-                `;
-            } else {
-                // Calcular dinámicamente basado en saleDate + 7 días
-                query = `
-                    SELECT 
-                        s.id as sale_id,
-                        s."clientId" as client_id,
-                        c.name as client_name,
-                        c.phone as telefono,
-                        (s."saleDate" + INTERVAL '7 days' * 
-                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                        )::DATE as fecha_vencimiento,
-                        s."weeklyPaymentAmount" as monto_pago,
-                        s."tienda_id" as tienda_id,
-                        CASE 
-                            WHEN (s."saleDate" + INTERVAL '7 days' * 
-                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                            )::DATE = DATE(:manana) THEN 'preventivo'
-                            WHEN (s."saleDate" + INTERVAL '7 days' * 
-                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                            )::DATE = DATE(:hoy) THEN 'vencimiento'
-                        END as tipo_llamada
-                    FROM sales s
-                    JOIN clients c ON s."clientId" = c.id
-                    WHERE s.status = 'active'
-                    AND s."balanceDue" > 0
-                    AND s."weeklyPaymentAmount" > 0
-                    AND c.phone IS NOT NULL
-                    AND c.phone != ''
-                    HAVING 
-                        (s."saleDate" + INTERVAL '7 days' * 
-                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                        )::DATE IN (DATE(:hoy), DATE(:manana))
-                `;
-            }
-
-            const [ventasPendientes] = await sequelize.query(query, { replacements });
+            // Nombres de columna correctos: balanceDue, weeklyPaymentAmount
+            const [ventasPendientes] = await sequelize.query(`
+                SELECT 
+                    s.id as sale_id,
+                    s."clientId" as client_id,
+                    c.name as client_name,
+                    c.phone as telefono,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPaymentAmount" as monto_pago,
+                    s.tienda_id,
+                    CASE 
+                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
+                    END as tipo_llamada
+                FROM sales s
+                JOIN clients c ON s."clientId" = c.id
+                WHERE s.status = 'active'
+                AND s."balanceDue" > 0
+                AND (
+                    DATE(s."nextPaymentDate") = DATE(:manana)
+                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
+                )
+                AND c.phone IS NOT NULL
+                AND c.phone != ''
+            `, { replacements: { hoy, manana } });
 
             console.log(`   📋 Ventas con pagos próximos: ${ventasPendientes.length}`);
 
@@ -178,8 +129,7 @@ function startLlamadasCronJob(models, sequelize) {
             console.log(`\n   📊 Resumen: ${exitosas} exitosas, ${fallidas} fallidas`);
 
         } catch (error) {
-            console.error('❌ [CRON LLAMADAS] Error:', error.message);
-            // No propagar el error para que el cron continue
+            console.error('❌ [CRON LLAMADAS] Error:', error);
         }
     };
 

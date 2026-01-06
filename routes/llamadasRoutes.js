@@ -1,5 +1,6 @@
 // routes/llamadasRoutes.js - Rutas para llamadas automáticas de cobranza preventiva
 const express = require('express');
+const { Op } = require('sequelize');
 const { realizarLlamada, dentroDeHorario, proximaVentanaLlamadas } = require('../services/twilioCallService');
 
 function initLlamadasRoutes(models, sequelize) {
@@ -42,7 +43,7 @@ function initLlamadasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // OBTENER PAGOS PRÓXIMOS A VENCER (VERSIÓN CALCULADA)
+    // OBTENER PAGOS PRÓXIMOS A VENCER
     // =========================================================
     
     router.get('/pendientes', async (req, res) => {
@@ -53,86 +54,36 @@ function initLlamadasRoutes(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
             
-            // PRIMERO: Verificar si la columna nextPaymentDate existe
-            const [columnCheck] = await sequelize.query(`
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'sales' 
-                AND column_name = 'nextPaymentDate'
-            `);
-            
-            const tieneNextPaymentDate = columnCheck.length > 0;
-            
-            let query;
-            let replacements = { hoy, manana };
-            
-            if (tieneNextPaymentDate) {
-                // Si la columna existe, usarla
-                query = `
-                    SELECT 
-                        s.id as sale_id,
-                        s."clientId" as client_id,
-                        c.name as client_name,
-                        c.phone as telefono,
-                        s."nextPaymentDate" as fecha_vencimiento,
-                        s."weeklyPaymentAmount" as monto_pago,
-                        s."balanceDue" as deuda_restante,
-                        s."tienda_id" as tienda_id,
-                        CASE 
-                            WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
-                            WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
-                        END as tipo_llamada
-                    FROM sales s
-                    JOIN clients c ON s."clientId" = c.id
-                    WHERE s.status = 'active'
-                    AND s."balanceDue" > 0
-                    AND (
-                        DATE(s."nextPaymentDate") = DATE(:manana)
-                        OR DATE(s."nextPaymentDate") = DATE(:hoy)
-                    )
-                    AND c.phone IS NOT NULL
-                    AND c.phone != ''
-                    ORDER BY s."nextPaymentDate" ASC
-                `;
-            } else {
-                // Si NO existe, calcular basado en saleDate y weeklyPaymentAmount
-                query = `
-                    SELECT 
-                        s.id as sale_id,
-                        s."clientId" as client_id,
-                        c.name as client_name,
-                        c.phone as telefono,
-                        -- Calcular próxima fecha de pago (cada 7 días desde saleDate)
-                        (s."saleDate" + INTERVAL '7 days' * 
-                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                        )::DATE as fecha_vencimiento,
-                        s."weeklyPaymentAmount" as monto_pago,
-                        s."balanceDue" as deuda_restante,
-                        s."tienda_id" as tienda_id,
-                        CASE 
-                            WHEN (s."saleDate" + INTERVAL '7 days' * 
-                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                            )::DATE = DATE(:manana) THEN 'preventivo'
-                            WHEN (s."saleDate" + INTERVAL '7 days' * 
-                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                            )::DATE = DATE(:hoy) THEN 'vencimiento'
-                        END as tipo_llamada
-                    FROM sales s
-                    JOIN clients c ON s."clientId" = c.id
-                    WHERE s.status = 'active'
-                    AND s."balanceDue" > 0
-                    AND s."weeklyPaymentAmount" > 0
-                    AND c.phone IS NOT NULL
-                    AND c.phone != ''
-                    HAVING 
-                        (s."saleDate" + INTERVAL '7 days' * 
-                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                        )::DATE IN (DATE(:hoy), DATE(:manana))
-                    ORDER BY fecha_vencimiento ASC
-                `;
-            }
-            
-            const [ventasPendientes] = await sequelize.query(query, { replacements });
+            // Nombres de columna correctos según la BD
+            const [ventasPendientes] = await sequelize.query(`
+                SELECT 
+                    s.id as sale_id,
+                    s."clientId" as client_id,
+                    c.name as client_name,
+                    c.phone as telefono,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPaymentAmount" as monto_pago,
+                    s."balanceDue" as deuda_restante,
+                    s.tienda_id,
+                    CASE 
+                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
+                    END as tipo_llamada
+                FROM sales s
+                JOIN clients c ON s."clientId" = c.id
+                WHERE s.status = 'active'
+                AND s."balanceDue" > 0
+                AND (
+                    DATE(s."nextPaymentDate") = DATE(:manana)
+                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
+                )
+                AND c.phone IS NOT NULL
+                AND c.phone != ''
+                ORDER BY s."nextPaymentDate" ASC
+            `, {
+                replacements: { hoy, manana }
+            });
+
             console.log(`📋 Ventas pendientes encontradas: ${ventasPendientes.length}`);
 
             const [llamadasHoy] = await sequelize.query(`
@@ -152,8 +103,7 @@ function initLlamadasRoutes(models, sequelize) {
                 total: pendientesFiltrados.length,
                 dentroDeHorario: dentroDeHorario(),
                 proximaVentana: proximaVentanaLlamadas(),
-                pendientes: pendientesFiltrados,
-                calculadoDinamicamente: !tieneNextPaymentDate
+                pendientes: pendientesFiltrados
             });
 
         } catch (error) {
@@ -181,79 +131,30 @@ function initLlamadasRoutes(models, sequelize) {
             const manana = new Date(hoy);
             manana.setDate(manana.getDate() + 1);
 
-            // Verificar si la columna existe
-            const [columnCheck] = await sequelize.query(`
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'sales' 
-                AND column_name = 'nextPaymentDate'
-            `);
-            
-            const tieneNextPaymentDate = columnCheck.length > 0;
-            
-            let query;
-            let replacements = { hoy, manana };
-            
-            if (tieneNextPaymentDate) {
-                query = `
-                    SELECT 
-                        s.id as sale_id,
-                        s."clientId" as client_id,
-                        c.name as client_name,
-                        c.phone as telefono,
-                        s."nextPaymentDate" as fecha_vencimiento,
-                        s."weeklyPaymentAmount" as monto_pago,
-                        s."tienda_id" as tienda_id,
-                        CASE 
-                            WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
-                            WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
-                        END as tipo_llamada
-                    FROM sales s
-                    JOIN clients c ON s."clientId" = c.id
-                    WHERE s.status = 'active'
-                    AND s."balanceDue" > 0
-                    AND (
-                        DATE(s."nextPaymentDate") = DATE(:manana)
-                        OR DATE(s."nextPaymentDate") = DATE(:hoy)
-                    )
-                    AND c.phone IS NOT NULL
-                    AND c.phone != ''
-                `;
-            } else {
-                query = `
-                    SELECT 
-                        s.id as sale_id,
-                        s."clientId" as client_id,
-                        c.name as client_name,
-                        c.phone as telefono,
-                        (s."saleDate" + INTERVAL '7 days' * 
-                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                        )::DATE as fecha_vencimiento,
-                        s."weeklyPaymentAmount" as monto_pago,
-                        s."tienda_id" as tienda_id,
-                        CASE 
-                            WHEN (s."saleDate" + INTERVAL '7 days' * 
-                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                            )::DATE = DATE(:manana) THEN 'preventivo'
-                            WHEN (s."saleDate" + INTERVAL '7 days' * 
-                                (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                            )::DATE = DATE(:hoy) THEN 'vencimiento'
-                        END as tipo_llamada
-                    FROM sales s
-                    JOIN clients c ON s."clientId" = c.id
-                    WHERE s.status = 'active'
-                    AND s."balanceDue" > 0
-                    AND s."weeklyPaymentAmount" > 0
-                    AND c.phone IS NOT NULL
-                    AND c.phone != ''
-                    HAVING 
-                        (s."saleDate" + INTERVAL '7 days' * 
-                            (CEIL(EXTRACT(DAY FROM NOW() - s."saleDate") / 7) + 1)
-                        )::DATE IN (DATE(:hoy), DATE(:manana))
-                `;
-            }
-
-            const [ventasPendientes] = await sequelize.query(query, { replacements });
+            const [ventasPendientes] = await sequelize.query(`
+                SELECT 
+                    s.id as sale_id,
+                    s."clientId" as client_id,
+                    c.name as client_name,
+                    c.phone as telefono,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPaymentAmount" as monto_pago,
+                    s.tienda_id,
+                    CASE 
+                        WHEN DATE(s."nextPaymentDate") = DATE(:manana) THEN 'preventivo'
+                        WHEN DATE(s."nextPaymentDate") = DATE(:hoy) THEN 'vencimiento'
+                    END as tipo_llamada
+                FROM sales s
+                JOIN clients c ON s."clientId" = c.id
+                WHERE s.status = 'active'
+                AND s."balanceDue" > 0
+                AND (
+                    DATE(s."nextPaymentDate") = DATE(:manana)
+                    OR DATE(s."nextPaymentDate") = DATE(:hoy)
+                )
+                AND c.phone IS NOT NULL
+                AND c.phone != ''
+            `, { replacements: { hoy, manana } });
 
             const [llamadasHoy] = await sequelize.query(`
                 SELECT sale_id, tipo FROM llamadas_automaticas WHERE DATE(created_at) = DATE(:hoy)
@@ -365,8 +266,9 @@ function initLlamadasRoutes(models, sequelize) {
                     s."clientId" as client_id,
                     c.name as client_name,
                     c.phone as telefono,
+                    s."nextPaymentDate" as fecha_vencimiento,
                     s."weeklyPaymentAmount" as monto_pago,
-                    s."tienda_id" as tienda_id
+                    s.tienda_id
                 FROM sales s
                 JOIN clients c ON s."clientId" = c.id
                 WHERE s.id = :saleId
@@ -393,8 +295,8 @@ function initLlamadasRoutes(models, sequelize) {
 
             await sequelize.query(`
                 INSERT INTO llamadas_automaticas 
-                (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, tienda_id)
-                VALUES (:saleId, :clientId, :clientName, :telefono, :monto, :tipo, :callSid, :status, :tiendaId)
+                (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
+                VALUES (:saleId, :clientId, :clientName, :telefono, :monto, :tipo, :callSid, :status, :fechaVencimiento, :tiendaId)
             `, {
                 replacements: {
                     saleId: venta.sale_id,
@@ -405,6 +307,7 @@ function initLlamadasRoutes(models, sequelize) {
                     tipo: tipo || 'preventivo',
                     callSid: resultado.callSid || null,
                     status: resultado.success ? 'initiated' : 'failed',
+                    fechaVencimiento: venta.fecha_vencimiento,
                     tiendaId: venta.tienda_id
                 }
             });
@@ -422,7 +325,86 @@ function initLlamadasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // HISTORIAL DE LLAMADAS (sin cambios)
+    // PRUEBA DE LLAMADA (SIN RESTRICCIÓN DE HORARIO)
+    // =========================================================
+    
+    router.post('/test/:saleId', async (req, res) => {
+        try {
+            const { saleId } = req.params;
+
+            const [ventas] = await sequelize.query(`
+                SELECT 
+                    s.id as sale_id,
+                    s."clientId" as client_id,
+                    c.name as client_name,
+                    c.phone as telefono,
+                    s."nextPaymentDate" as fecha_vencimiento,
+                    s."weeklyPaymentAmount" as monto_pago,
+                    s.tienda_id
+                FROM sales s
+                JOIN clients c ON s."clientId" = c.id
+                WHERE s.id = :saleId
+            `, { replacements: { saleId } });
+
+            if (ventas.length === 0) {
+                return res.status(404).json({ success: false, message: 'Venta no encontrada' });
+            }
+
+            const venta = ventas[0];
+
+            if (!venta.telefono) {
+                return res.status(400).json({ success: false, message: 'El cliente no tiene teléfono registrado' });
+            }
+
+            console.log(`🧪 [TEST] Llamada de prueba a ${venta.client_name} (${venta.telefono})`);
+
+            const resultado = await realizarLlamada(
+                venta.telefono,
+                venta.client_name,
+                venta.monto_pago || 100,
+                'preventivo',
+                venta.sale_id,
+                venta.client_id
+            );
+
+            await sequelize.query(`
+                INSERT INTO llamadas_automaticas 
+                (sale_id, client_id, client_name, telefono, monto, tipo, call_sid, status, fecha_vencimiento, tienda_id)
+                VALUES (:saleId, :clientId, :clientName, :telefono, :monto, :tipo, :callSid, :status, :fechaVencimiento, :tiendaId)
+            `, {
+                replacements: {
+                    saleId: venta.sale_id,
+                    clientId: venta.client_id,
+                    clientName: venta.client_name,
+                    telefono: venta.telefono,
+                    monto: venta.monto_pago || 100,
+                    tipo: 'test',
+                    callSid: resultado.callSid || null,
+                    status: resultado.success ? 'initiated' : 'failed',
+                    fechaVencimiento: venta.fecha_vencimiento,
+                    tiendaId: venta.tienda_id
+                }
+            });
+
+            res.json({
+                success: resultado.success,
+                message: resultado.success ? '🧪 Llamada de prueba iniciada!' : `Error: ${resultado.error}`,
+                resultado,
+                venta: {
+                    cliente: venta.client_name,
+                    telefono: venta.telefono,
+                    monto: venta.monto_pago
+                }
+            });
+
+        } catch (error) {
+            console.error('Error en llamada de prueba:', error);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    });
+
+    // =========================================================
+    // HISTORIAL DE LLAMADAS
     // =========================================================
     
     router.get('/historial', async (req, res) => {
@@ -447,9 +429,8 @@ function initLlamadasRoutes(models, sequelize) {
             }
 
             const [llamadas] = await sequelize.query(`
-                SELECT l.*, s."weeklyPaymentAmount" as monto_pago
+                SELECT l.*
                 FROM llamadas_automaticas l
-                LEFT JOIN sales s ON l.sale_id = s.id
                 WHERE ${whereClause}
                 ORDER BY l.created_at DESC
                 LIMIT :limit OFFSET :offset
@@ -489,7 +470,7 @@ function initLlamadasRoutes(models, sequelize) {
     });
 
     // =========================================================
-    // ESTADÍSTICAS GENERALES (sin cambios)
+    // ESTADÍSTICAS GENERALES
     // =========================================================
     
     router.get('/estadisticas', async (req, res) => {
