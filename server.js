@@ -414,6 +414,20 @@ sequelize.authenticate()
     startLlamadasCronJob(models, sequelize);
     console.log('✅ Cron job Llamadas Automáticas iniciado (9 AM - 6 PM).');
 
+    // =========================================================
+    // ⭐ RUTAS BACKUP - GOOGLE DRIVE
+    // =========================================================
+    const initBackupRoutes = require('./routes/backupRoutes');
+    app.use('/api/backup', authMiddleware, initBackupRoutes());
+    console.log('✅ Rutas de Backup montadas.');
+
+    // =========================================================
+    // ⭐ CRON JOB BACKUP - DIARIO 3:00 AM
+    // =========================================================
+    const { startBackupCronJob } = require('./cron/backupCronJob');
+    startBackupCronJob();
+    console.log('✅ Cron job Backup iniciado (diario 3:00 AM).');
+
     console.log('✅ Todas las rutas principales han sido montadas.');
     app.listen(PORT, () => console.log(`🚀 Servidor corriendo en el puerto ${PORT}`));
   })
