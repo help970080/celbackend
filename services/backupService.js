@@ -1,112 +1,8 @@
-// services/backupService.js - Backup automático a Google Drive
-const { google } = require('googleapis');
+// services/backupService.js - Backup automático a Cloudinary
+const cloudinary = require('cloudinary').v2;
 const { Sequelize } = require('sequelize');
 const fs = require('fs');
 const path = require('path');
-
-// Configuración de Google Drive
-const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '1gAXqEu3BDH8QoCDT2wrdIyC0gytioSQP';
-
-// Credenciales de la cuenta de servicio
-function getGoogleCredentials() {
-    let privateKey = process.env.GOOGLE_PRIVATE_KEY || "";
-    
-    if (privateKey) {
-        privateKey = privateKey.replace(/\\n/g, '\n');
-        
-        if (!privateKey.includes('-----BEGIN')) {
-            privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----\n`;
-        }
-    }
-    
-    return {
-        type: "service_account",
-        project_id: "celexpress-backups",
-        private_key_id: "2e268bc8b2e3d34c2862e82ff4b49e5cb1105bec",
-        private_key: privateKey,
-        client_email: "celexpress-backup@celexpress-backups.iam.gserviceaccount.com",
-        client_id: "104872331655676559796",
-        auth_uri: "https://accounts.google.com/o/oauth2/auth",
-        token_uri: "https://oauth2.googleapis.com/token"
-    };
-}
-
-/**
- * Autenticar con Google Drive
- */
-async function getGoogleDriveAuth() {
-    const credentials = getGoogleCredentials();
-    
-    if (!credentials.private_key) {
-        throw new Error('GOOGLE_PRIVATE_KEY no está configurada en las variables de entorno');
-    }
-    
-    const auth = new google.auth.GoogleAuth({
-        credentials: credentials,
-        scopes: ['https://www.googleapis.com/auth/drive.file']
-    });
-    return auth;
-}
-
-/**
- * Subir archivo a Google Drive
- */
-async function uploadToGoogleDrive(filePath, fileName) {
-    try {
-        console.log('📤 Iniciando subida a Google Drive...');
-        console.log(`   Carpeta destino: ${GOOGLE_DRIVE_FOLDER_ID}`);
-        
-        const auth = await getGoogleDriveAuth();
-        const drive = google.drive({ version: 'v3', auth });
-
-        // Primero verificar que tenemos acceso a la carpeta
-        try {
-            const folder = await drive.files.get({
-                fileId: GOOGLE_DRIVE_FOLDER_ID,
-                fields: 'id, name'
-            });
-            console.log(`   ✅ Carpeta accesible: ${folder.data.name}`);
-        } catch (folderError) {
-            console.error('   ❌ No se puede acceder a la carpeta:', folderError.message);
-            throw new Error(`No se puede acceder a la carpeta de Drive: ${folderError.message}`);
-        }
-
-        // Leer el contenido del archivo
-        const fileContent = fs.readFileSync(filePath, 'utf8');
-        console.log(`   Tamaño del archivo: ${(fileContent.length / 1024).toFixed(2)} KB`);
-        
-        // Crear el archivo
-        const response = await drive.files.create({
-            requestBody: {
-                name: fileName,
-                parents: [GOOGLE_DRIVE_FOLDER_ID]
-            },
-            media: {
-                mimeType: 'application/json',
-                body: fileContent
-            },
-            fields: 'id, name'
-        });
-
-        console.log(`✅ Backup subido a Google Drive: ${response.data.name}`);
-        
-        const fileLink = `https://drive.google.com/file/d/${response.data.id}/view`;
-        console.log(`   Link: ${fileLink}`);
-
-        return {
-            success: true,
-            fileId: response.data.id,
-            fileName: response.data.name,
-            link: fileLink
-        };
-    } catch (error) {
-        console.error('❌ Error subiendo a Google Drive:', error.message);
-        if (error.errors) {
-            error.errors.forEach(e => console.error('   -', e.message, e.reason));
-        }
-        return { success: false, error: error.message };
-    }
-}
 
 /**
  * Crear backup de la base de datos usando Sequelize
@@ -186,7 +82,37 @@ async function createDatabaseBackup() {
 }
 
 /**
- * Ejecutar backup completo (crear + subir a Drive)
+ * Subir archivo a Cloudinary
+ */
+async function uploadToCloudinary(filePath, fileName) {
+    try {
+        console.log('📤 Subiendo backup a Cloudinary...');
+        
+        const result = await cloudinary.uploader.upload(filePath, {
+            resource_type: 'raw',
+            public_id: `backups/${fileName.replace('.json', '')}`,
+            folder: 'celexpress-backups',
+            overwrite: true
+        });
+
+        console.log(`✅ Backup subido a Cloudinary`);
+        console.log(`   URL: ${result.secure_url}`);
+
+        return {
+            success: true,
+            fileId: result.public_id,
+            fileName: fileName,
+            link: result.secure_url,
+            size: result.bytes
+        };
+    } catch (error) {
+        console.error('❌ Error subiendo a Cloudinary:', error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Ejecutar backup completo (crear + subir a Cloudinary)
  */
 async function executeFullBackup() {
     console.log('\n========================================');
@@ -201,8 +127,8 @@ async function executeFullBackup() {
             throw new Error(backupResult.error);
         }
 
-        // Paso 2: Subir a Google Drive
-        const uploadResult = await uploadToGoogleDrive(backupResult.filePath, backupResult.fileName);
+        // Paso 2: Subir a Cloudinary
+        const uploadResult = await uploadToCloudinary(backupResult.filePath, backupResult.fileName);
         if (!uploadResult.success) {
             throw new Error(uploadResult.error);
         }
@@ -216,7 +142,8 @@ async function executeFullBackup() {
         return {
             success: true,
             fileName: backupResult.fileName,
-            driveLink: uploadResult.link,
+            cloudinaryUrl: uploadResult.link,
+            size: uploadResult.size,
             timestamp: new Date().toISOString()
         };
 
@@ -231,40 +158,41 @@ async function executeFullBackup() {
 }
 
 /**
- * Listar backups en Google Drive
+ * Listar backups en Cloudinary
  */
 async function listBackups() {
     try {
-        const auth = await getGoogleDriveAuth();
-        const drive = google.drive({ version: 'v3', auth });
-
-        const response = await drive.files.list({
-            q: `'${GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed = false`,
-            fields: 'files(id, name, createdTime, size, webViewLink)',
-            orderBy: 'createdTime desc',
-            pageSize: 30,
-            supportsAllDrives: true
+        const result = await cloudinary.api.resources({
+            type: 'upload',
+            resource_type: 'raw',
+            prefix: 'celexpress-backups/backups/',
+            max_results: 30
         });
+
+        const backups = result.resources.map(file => ({
+            id: file.public_id,
+            name: file.public_id.split('/').pop() + '.json',
+            createdAt: file.created_at,
+            size: file.bytes ? `${(file.bytes / 1024 / 1024).toFixed(2)} MB` : 'N/A',
+            link: file.secure_url
+        }));
+
+        // Ordenar por fecha descendente
+        backups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
         return {
             success: true,
-            backups: response.data.files.map(file => ({
-                id: file.id,
-                name: file.name,
-                createdAt: file.createdTime,
-                size: file.size ? `${(parseInt(file.size) / 1024 / 1024).toFixed(2)} MB` : 'N/A',
-                link: file.webViewLink
-            }))
+            backups
         };
     } catch (error) {
         console.error('Error listando backups:', error.message);
-        return { success: false, error: error.message };
+        return { success: false, error: error.message, backups: [] };
     }
 }
 
 module.exports = {
     executeFullBackup,
     createDatabaseBackup,
-    uploadToGoogleDrive,
+    uploadToCloudinary,
     listBackups
 };
