@@ -10,23 +10,44 @@ const execPromise = util.promisify(exec);
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '1gAXqEu3BDH8QoCDT2wrdIyC0gytioSQP';
 
 // Credenciales de la cuenta de servicio
-const GOOGLE_CREDENTIALS = {
-    type: "service_account",
-    project_id: "celexpress-backups",
-    private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID || "2e268bc8b2e3d34c2862e82ff4b49e5cb1105bec",
-    private_key: (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, '\n'),
-    client_email: "celexpress-backup@celexpress-backups.iam.gserviceaccount.com",
-    client_id: "104872331655676559796",
-    auth_uri: "https://accounts.google.com/o/oauth2/auth",
-    token_uri: "https://oauth2.googleapis.com/token"
-};
+function getGoogleCredentials() {
+    let privateKey = process.env.GOOGLE_PRIVATE_KEY || "";
+    
+    // Manejar diferentes formatos de la key
+    if (privateKey) {
+        // Si viene con \\n literal, convertir a saltos de línea reales
+        privateKey = privateKey.replace(/\\n/g, '\n');
+        
+        // Si no tiene los headers, agregarlos
+        if (!privateKey.includes('-----BEGIN')) {
+            privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----\n`;
+        }
+    }
+    
+    return {
+        type: "service_account",
+        project_id: "celexpress-backups",
+        private_key_id: "2e268bc8b2e3d34c2862e82ff4b49e5cb1105bec",
+        private_key: privateKey,
+        client_email: "celexpress-backup@celexpress-backups.iam.gserviceaccount.com",
+        client_id: "104872331655676559796",
+        auth_uri: "https://accounts.google.com/o/oauth2/auth",
+        token_uri: "https://oauth2.googleapis.com/token"
+    };
+}
 
 /**
  * Autenticar con Google Drive
  */
 async function getGoogleDriveAuth() {
+    const credentials = getGoogleCredentials();
+    
+    if (!credentials.private_key) {
+        throw new Error('GOOGLE_PRIVATE_KEY no está configurada en las variables de entorno');
+    }
+    
     const auth = new google.auth.GoogleAuth({
-        credentials: GOOGLE_CREDENTIALS,
+        credentials: credentials,
         scopes: ['https://www.googleapis.com/auth/drive.file']
     });
     return auth;
