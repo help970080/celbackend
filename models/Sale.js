@@ -18,6 +18,22 @@ module.exports = (sequelize) => {
         weeklyPaymentAmount: { type: DataTypes.FLOAT, allowNull: true },
         balanceDue: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
         status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'completed' },
+        // ⭐ NUEVO: Fecha del próximo pago (para llamadas automáticas)
+        nextPaymentDate: { 
+            type: DataTypes.DATEONLY, 
+            allowNull: true 
+        },
+        // ⭐ NUEVO: Fecha del último pago realizado
+        lastPaymentDate: { 
+            type: DataTypes.DATEONLY, 
+            allowNull: true 
+        },
+        // ⭐ NUEVO: Contador de pagos realizados
+        paymentsMade: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            defaultValue: 0
+        },
         assignedCollectorId: {
             type: DataTypes.INTEGER,
             allowNull: true

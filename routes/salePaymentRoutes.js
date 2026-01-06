@@ -1,4 +1,4 @@
-// routes/salePaymentRoutes.js - VERSIÓN CORREGIDA CON MULTI-TENANT Y STORE EN RECIBO
+// routes/salePaymentRoutes.js - VERSIÓN CON APROBAR CRÉDITO Y NEXT PAYMENT DATE
 
 const express = require('express');
 const router = express.Router();
@@ -9,7 +9,7 @@ const applyStoreFilter = require('../middleware/storeFilterMiddleware');
 const moment = require('moment-timezone');
 const ExcelJS = require('exceljs');
 
-let Sale, Client, Product, Payment, SaleItem, User, AuditLog, Store; // ⭐ AGREGADO Store
+let Sale, Client, Product, Payment, SaleItem, User, AuditLog, Store;
 const TIMEZONE = "America/Mexico_City";
 
 const initSalePaymentRoutes = (models, sequelize) => {
@@ -20,9 +20,35 @@ const initSalePaymentRoutes = (models, sequelize) => {
     SaleItem = models.SaleItem;
     User = models.User;
     AuditLog = models.AuditLog;
-    Store = models.Store; // ⭐ AGREGADO
+    Store = models.Store;
 
+    // =========================================================
+    // ⭐ FUNCIÓN HELPER: Calcular próxima fecha de pago
+    // =========================================================
+    function calcularProximaFechaPago(fechaBase, frecuencia, pagosRealizados = 0) {
+        const fecha = moment(fechaBase).tz(TIMEZONE);
+        
+        // Calcular siguiente fecha según frecuencia
+        switch (frecuencia) {
+            case 'weekly':
+                fecha.add(pagosRealizados + 1, 'weeks');
+                break;
+            case 'biweekly':
+                fecha.add((pagosRealizados + 1) * 2, 'weeks');
+                break;
+            case 'monthly':
+                fecha.add(pagosRealizados + 1, 'months');
+                break;
+            default:
+                fecha.add(pagosRealizados + 1, 'weeks'); // Default semanal
+        }
+        
+        return fecha.format('YYYY-MM-DD');
+    }
+
+    // =========================================================
     // ⭐ POST / - Crear venta
+    // =========================================================
     router.post('/', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
         applyStoreFilter,
@@ -35,7 +61,6 @@ const initSalePaymentRoutes = (models, sequelize) => {
             
             const t = await sequelize.transaction();
             try {
-                // Verificar que el cliente pertenece a la tienda del usuario
                 const client = await Client.findOne({
                     where: { 
                         id: clientId,
@@ -87,7 +112,8 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     isCredit: !!isCredit, 
                     status: isCredit ? 'pending_credit' : 'completed', 
                     assignedCollectorId: isCredit && assignedCollectorId ? parseInt(assignedCollectorId) : null,
-                    tiendaId: req.user.tiendaId
+                    tiendaId: req.user.tiendaId,
+                    paymentsMade: 0
                 };
 
                 if (isCredit) {
@@ -160,19 +186,151 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
+    // =========================================================
+    // ⭐ PUT /:saleId/aprobar - APROBAR CRÉDITO (NUEVO)
+    // =========================================================
+    router.put('/:saleId/aprobar', 
+        authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
+        applyStoreFilter,
+        async (req, res) => {
+            const { saleId } = req.params;
+            
+            try {
+                const sale = await Sale.findOne({
+                    where: { 
+                        id: saleId,
+                        ...req.storeFilter 
+                    },
+                    include: [{ model: Client, as: 'client' }]
+                });
+
+                if (!sale) {
+                    return res.status(404).json({ message: 'Venta no encontrada o no pertenece a tu tienda.' });
+                }
+
+                if (sale.status !== 'pending_credit') {
+                    return res.status(400).json({ message: 'Esta venta no está pendiente de aprobación.' });
+                }
+
+                // Calcular primera fecha de pago (1 semana/quincena/mes desde hoy)
+                const primeraFechaPago = calcularProximaFechaPago(
+                    new Date(), 
+                    sale.paymentFrequency,
+                    0
+                );
+
+                // Actualizar venta
+                sale.status = 'active';
+                sale.nextPaymentDate = primeraFechaPago;
+                sale.paymentsMade = 0;
+                await sale.save();
+
+                try {
+                    await AuditLog.create({
+                        userId: req.user.userId,
+                        username: req.user.username,
+                        action: 'APROBÓ CRÉDITO',
+                        details: `Venta ID: ${saleId} aprobada. Cliente: ${sale.client?.name}. Primer pago: ${primeraFechaPago}`,
+                        tiendaId: req.user.tiendaId
+                    });
+                } catch (auditError) { 
+                    console.error("Error al registrar en auditoría:", auditError); 
+                }
+
+                res.json({ 
+                    message: 'Crédito aprobado exitosamente', 
+                    sale,
+                    proximoPago: primeraFechaPago
+                });
+            } catch (error) {
+                console.error('Error al aprobar crédito:', error);
+                res.status(500).json({ message: 'Error interno del servidor.' });
+            }
+        }
+    );
+
+    // =========================================================
+    // ⭐ PUT /:saleId/rechazar - RECHAZAR CRÉDITO (NUEVO)
+    // =========================================================
+    router.put('/:saleId/rechazar', 
+        authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
+        applyStoreFilter,
+        async (req, res) => {
+            const { saleId } = req.params;
+            const { motivo } = req.body;
+            
+            try {
+                const sale = await Sale.findOne({
+                    where: { 
+                        id: saleId,
+                        ...req.storeFilter 
+                    },
+                    include: [
+                        { model: Client, as: 'client' },
+                        { model: SaleItem, as: 'saleItems' }
+                    ]
+                });
+
+                if (!sale) {
+                    return res.status(404).json({ message: 'Venta no encontrada.' });
+                }
+
+                if (sale.status !== 'pending_credit') {
+                    return res.status(400).json({ message: 'Esta venta no está pendiente de aprobación.' });
+                }
+
+                // Restaurar stock de productos
+                for (const item of sale.saleItems) {
+                    await Product.increment('stock', {
+                        by: item.quantity,
+                        where: { id: item.productId }
+                    });
+                }
+
+                // Marcar como rechazado
+                sale.status = 'rejected';
+                await sale.save();
+
+                try {
+                    await AuditLog.create({
+                        userId: req.user.userId,
+                        username: req.user.username,
+                        action: 'RECHAZÓ CRÉDITO',
+                        details: `Venta ID: ${saleId} rechazada. Cliente: ${sale.client?.name}. Motivo: ${motivo || 'No especificado'}`,
+                        tiendaId: req.user.tiendaId
+                    });
+                } catch (auditError) { 
+                    console.error("Error al registrar en auditoría:", auditError); 
+                }
+
+                res.json({ message: 'Crédito rechazado. Stock restaurado.', sale });
+            } catch (error) {
+                console.error('Error al rechazar crédito:', error);
+                res.status(500).json({ message: 'Error interno del servidor.' });
+            }
+        }
+    );
+
+    // =========================================================
     // GET / - Listar ventas
+    // =========================================================
     router.get('/', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
         applyStoreFilter, 
         async (req, res) => {
             try {
-                const { search, page, limit } = req.query;
+                const { search, page, limit, status } = req.query;
                 const pageNum = parseInt(page, 10) || 1;
                 const limitNum = parseInt(limit, 10) || 10;
                 const offset = (pageNum - 1) * limitNum;
 
                 let whereClause = { ...req.storeFilter };
                 let clientWhereClause = {};
+
+                // Filtro por status
+                if (status && status !== 'all') {
+                    whereClause.status = status;
+                }
 
                 if (search) {
                     clientWhereClause = {
@@ -209,7 +367,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
+    // =========================================================
     // GET /export-excel - Exportar ventas
+    // =========================================================
     router.get('/export-excel', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'viewer_reports']), 
         applyStoreFilter, 
@@ -247,6 +407,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                     { header: 'Pago Semanal', key: 'weeklyPaymentAmount', width: 15 },
                     { header: '# Pagos', key: 'numberOfPayments', width: 10 },
                     { header: 'Frecuencia', key: 'paymentFrequency', width: 12 },
+                    { header: 'Próximo Pago', key: 'nextPaymentDate', width: 15 },
                     { header: 'Estado', key: 'status', width: 15 },
                     { header: 'Gestor Asignado', key: 'collector', width: 20 },
                     { header: 'Pagos Realizados', key: 'paymentsMade', width: 15 },
@@ -281,6 +442,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                         weeklyPaymentAmount: sale.weeklyPaymentAmount || 'N/A',
                         numberOfPayments: sale.numberOfPayments || 'N/A',
                         paymentFrequency: sale.paymentFrequency || 'N/A',
+                        nextPaymentDate: sale.nextPaymentDate ? moment(sale.nextPaymentDate).format('DD/MM/YYYY') : 'N/A',
                         status: sale.status,
                         collector: collectorName,
                         paymentsMade: paymentsMade,
@@ -306,7 +468,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // ⭐ GET /:saleId - Obtener venta específica (CORREGIDO: INCLUYE STORE)
+    // =========================================================
+    // GET /:saleId - Obtener venta específica
+    // =========================================================
     router.get('/:saleId', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), 
         applyStoreFilter, 
@@ -323,7 +487,7 @@ const initSalePaymentRoutes = (models, sequelize) => {
                         { model: SaleItem, as: 'saleItems', include: [{ model: Product, as: 'product' }] },
                         { model: User, as: 'assignedCollector', attributes: ['id', 'username'] },
                         { model: Payment, as: 'payments', order: [['paymentDate', 'DESC']] },
-                        { model: Store, as: 'store', attributes: ['id', 'name', 'address', 'phone', 'email', 'depositInfo'] } // ⭐ INCLUYE depositInfo
+                        { model: Store, as: 'store', attributes: ['id', 'name', 'address', 'phone', 'email', 'depositInfo'] }
                     ]
                 });
 
@@ -339,7 +503,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
+    // =========================================================
     // PUT /:saleId/assign - Asignar gestor
+    // =========================================================
     router.put('/:saleId/assign', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']), 
         applyStoreFilter, 
@@ -388,7 +554,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
-    // POST /:saleId/payments - Registrar pago
+    // =========================================================
+    // ⭐ POST /:saleId/payments - Registrar pago (ACTUALIZADO)
+    // =========================================================
     router.post('/:saleId/payments', 
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin', 'collector_agent']), 
         applyStoreFilter,
@@ -430,9 +598,22 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 }
 
                 sale.balanceDue = parseFloat(newBalance.toFixed(2));
+                sale.lastPaymentDate = moment().tz(TIMEZONE).format('YYYY-MM-DD');
+                sale.paymentsMade = (sale.paymentsMade || 0) + 1;
+
+                // ⭐ Calcular próxima fecha de pago
                 if (sale.balanceDue <= 0) { 
-                    sale.status = 'paid_off'; 
+                    sale.status = 'paid_off';
+                    sale.nextPaymentDate = null; // Ya no hay más pagos
+                } else {
+                    // Calcular siguiente fecha de pago
+                    sale.nextPaymentDate = calcularProximaFechaPago(
+                        sale.saleDate,
+                        sale.paymentFrequency,
+                        sale.paymentsMade
+                    );
                 }
+
                 await sale.save();
 
                 try {
@@ -440,21 +621,28 @@ const initSalePaymentRoutes = (models, sequelize) => {
                         userId: req.user.userId,
                         username: req.user.username,
                         action: 'REGISTRÓ PAGO',
-                        details: `Monto: $${parseFloat(amount).toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}`,
+                        details: `Monto: $${parseFloat(amount).toFixed(2)} en Venta ID: ${saleId}. Saldo restante: $${sale.balanceDue.toFixed(2)}. Próximo pago: ${sale.nextPaymentDate || 'Liquidado'}`,
                         tiendaId: req.user.tiendaId
                     });
                 } catch (auditError) { 
                     console.error("Error al registrar en auditoría:", auditError); 
                 }
                 
-                res.status(201).json(newPayment);
+                res.status(201).json({
+                    ...newPayment.toJSON(),
+                    nextPaymentDate: sale.nextPaymentDate,
+                    balanceDue: sale.balanceDue
+                });
             } catch (error) {
+                console.error('Error al registrar pago:', error);
                 res.status(500).json({ message: 'Error interno del servidor.' });
             }
         }
     );
 
+    // =========================================================
     // DELETE /payments/:paymentId - Cancelar pago
+    // =========================================================
     router.delete('/payments/:paymentId', 
         authMiddleware, 
         authorizeRoles(['super_admin']), 
@@ -483,8 +671,16 @@ const initSalePaymentRoutes = (models, sequelize) => {
                 const oldStatus = sale.status;
                 
                 sale.balanceDue = parseFloat((sale.balanceDue + reversedAmount).toFixed(2));
+                sale.paymentsMade = Math.max(0, (sale.paymentsMade || 1) - 1);
+                
                 if (oldStatus === 'paid_off' && sale.balanceDue > 0) {
-                    sale.status = 'pending_credit';
+                    sale.status = 'active';
+                    // Recalcular próxima fecha de pago
+                    sale.nextPaymentDate = calcularProximaFechaPago(
+                        sale.saleDate,
+                        sale.paymentFrequency,
+                        sale.paymentsMade
+                    );
                 }
                 
                 await sale.save({ transaction: t });
@@ -512,7 +708,9 @@ const initSalePaymentRoutes = (models, sequelize) => {
         }
     );
 
+    // =========================================================
     // DELETE /:saleId - Eliminar venta
+    // =========================================================
     router.delete('/:saleId', 
         authorizeRoles(['super_admin']), 
         applyStoreFilter,
