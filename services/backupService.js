@@ -53,37 +53,57 @@ async function getGoogleDriveAuth() {
  */
 async function uploadToGoogleDrive(filePath, fileName) {
     try {
+        console.log('📤 Iniciando subida a Google Drive...');
+        console.log(`   Carpeta destino: ${GOOGLE_DRIVE_FOLDER_ID}`);
+        
         const auth = await getGoogleDriveAuth();
         const drive = google.drive({ version: 'v3', auth });
 
-        const fileMetadata = {
-            name: fileName,
-            parents: [GOOGLE_DRIVE_FOLDER_ID]
-        };
+        // Primero verificar que tenemos acceso a la carpeta
+        try {
+            const folder = await drive.files.get({
+                fileId: GOOGLE_DRIVE_FOLDER_ID,
+                fields: 'id, name'
+            });
+            console.log(`   ✅ Carpeta accesible: ${folder.data.name}`);
+        } catch (folderError) {
+            console.error('   ❌ No se puede acceder a la carpeta:', folderError.message);
+            throw new Error(`No se puede acceder a la carpeta de Drive: ${folderError.message}`);
+        }
 
-        const media = {
-            mimeType: 'application/json',
-            body: fs.createReadStream(filePath)
-        };
-
+        // Leer el contenido del archivo
+        const fileContent = fs.readFileSync(filePath, 'utf8');
+        console.log(`   Tamaño del archivo: ${(fileContent.length / 1024).toFixed(2)} KB`);
+        
+        // Crear el archivo
         const response = await drive.files.create({
-            requestBody: fileMetadata,
-            media: media,
-            fields: 'id, name, webViewLink',
-            supportsAllDrives: true
+            requestBody: {
+                name: fileName,
+                parents: [GOOGLE_DRIVE_FOLDER_ID]
+            },
+            media: {
+                mimeType: 'application/json',
+                body: fileContent
+            },
+            fields: 'id, name'
         });
 
         console.log(`✅ Backup subido a Google Drive: ${response.data.name}`);
-        console.log(`   Link: ${response.data.webViewLink}`);
+        
+        const fileLink = `https://drive.google.com/file/d/${response.data.id}/view`;
+        console.log(`   Link: ${fileLink}`);
 
         return {
             success: true,
             fileId: response.data.id,
             fileName: response.data.name,
-            link: response.data.webViewLink
+            link: fileLink
         };
     } catch (error) {
         console.error('❌ Error subiendo a Google Drive:', error.message);
+        if (error.errors) {
+            error.errors.forEach(e => console.error('   -', e.message, e.reason));
+        }
         return { success: false, error: error.message };
     }
 }
