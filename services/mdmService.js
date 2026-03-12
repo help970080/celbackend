@@ -1,6 +1,7 @@
 /**
  * MDM Service para ManageEngine - Lee cuentas desde BD
  * Versión con soporte multi-cuenta dinámico
+ * CORREGIDO: Manejo robusto de fechas en tokenExpiresAt
  */
 
 const axios = require('axios');
@@ -23,7 +24,8 @@ async function refreshAccessToken(account) {
         });
 
         const accessToken = response.data.access_token;
-        const expiresAt = new Date(Date.now() + (response.data.expires_in * 1000) - 60000);
+        const expiresIn = response.data.expires_in || 3600;
+        const expiresAt = new Date(Date.now() + (expiresIn * 1000) - 60000);
 
         // Guardar en cache
         tokenCache.set(account.id, {
@@ -31,23 +33,32 @@ async function refreshAccessToken(account) {
             expiresAt
         });
 
-        // Actualizar en BD
-        await account.update({
-            accessToken,
-            tokenExpiresAt: expiresAt,
-            lastStatus: 'active',
-            lastCheckedAt: new Date()
-        });
+        // Actualizar en BD con fecha validada
+        try {
+            await account.update({
+                accessToken,
+                tokenExpiresAt: expiresAt,
+                lastStatus: 'active',
+                lastCheckedAt: new Date()
+            });
+        } catch (dbError) {
+            console.error(`⚠️ Error guardando token en BD para ${account.nombre}:`, dbError.message);
+            // El token sigue en cache, funciona hasta que reinicie
+        }
 
         console.log(`✅ Token renovado para cuenta: ${account.nombre}`);
         return accessToken;
     } catch (error) {
         console.error(`❌ Error renovando token para ${account.nombre}:`, error.response?.data || error.message);
         
-        await account.update({
-            lastStatus: 'error',
-            lastCheckedAt: new Date()
-        });
+        try {
+            await account.update({
+                lastStatus: 'error',
+                lastCheckedAt: new Date()
+            });
+        } catch (dbError) {
+            // Silenciar error de BD secundario
+        }
         
         throw new Error(`Error de autenticación MDM: ${account.nombre}`);
     }
@@ -57,12 +68,26 @@ async function refreshAccessToken(account) {
  * Obtiene token válido para una cuenta
  */
 async function getValidToken(account) {
+    // Revisar cache primero
     const cached = tokenCache.get(account.id);
-    
     if (cached && cached.expiresAt > new Date()) {
         return cached.accessToken;
     }
     
+    // Revisar si el token en BD aún es válido
+    if (account.accessToken && account.tokenExpiresAt) {
+        const expiresAt = new Date(account.tokenExpiresAt);
+        // Validar que la fecha sea válida antes de comparar
+        if (!isNaN(expiresAt.getTime()) && expiresAt > new Date()) {
+            tokenCache.set(account.id, {
+                accessToken: account.accessToken,
+                expiresAt
+            });
+            return account.accessToken;
+        }
+    }
+    
+    // Renovar token
     return await refreshAccessToken(account);
 }
 
@@ -302,7 +327,7 @@ async function testAccountConnection(account) {
  * Verificar estado de todas las cuentas
  */
 async function checkAllAccounts(MdmAccount) {
-    const accounts = await MdmAccount.findAll();
+    const accounts = await MdmAccount.findAll({ where: { activo: true } });
     const results = [];
     
     for (const account of accounts) {
