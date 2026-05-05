@@ -263,17 +263,27 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
     const lockMessage = message || 'Dispositivo bloqueado por falta de pago. Contacte a CelExpress.';
     const lockPhone = phone || process.env.CELEXPRESS_PHONE || '';
 
+    // FORZAR string explícitamente
+    const safeDeviceId = String(deviceId).trim();
+
     const results = {
         success: false,
         action: 'locked',
-        deviceId,
+        deviceId: safeDeviceId,
         steps: []
     };
 
+    console.log(`🔒 [lockDevice] account=${account.nombre} deviceId="${safeDeviceId}" (len=${safeDeviceId.length}) typeof=${typeof safeDeviceId}`);
+
     // STEP 1: Lock device
+    // ManageEngine MDM Cloud usa endpoint diferente: lock en lugar de actions/lock_device
+    // Probamos el endpoint correcto según documentación oficial
+    const lockUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/lock`;
+    console.log(`🔒 [lockDevice] URL: ${lockUrl}`);
+
     try {
         const lockResp = await axios.post(
-            `https://mdm.manageengine.com/api/v1/mdm/devices/${deviceId}/actions/lock_device`,
+            lockUrl,
             { lock_message: lockMessage },
             { headers, timeout: 30000, validateStatus: () => true }
         );
@@ -282,8 +292,11 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
         const body = lockResp.data || {};
         const apiSuccess = ok && body.status !== 'FAILED' && body.status !== 'ERROR' && !body.error_code;
 
+        console.log(`🔒 [lockDevice] response status=${lockResp.status} body=${JSON.stringify(body).substring(0,200)}`);
+
         results.steps.push({
             step: 'lock_device',
+            url: lockUrl,
             httpStatus: lockResp.status,
             apiStatus: body.status || 'unknown',
             success: apiSuccess,
@@ -291,7 +304,7 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
         });
 
         if (!apiSuccess) {
-            throw new Error(`lock_device falló: HTTP ${lockResp.status}, body: ${JSON.stringify(body)}`);
+            throw new Error(`lock_device falló: HTTP ${lockResp.status}, URL: ${lockUrl}, body: ${JSON.stringify(body)}`);
         }
     } catch (e) {
         results.steps.push({ step: 'lock_device', success: false, error: e.message });
@@ -301,7 +314,7 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
     // STEP 2: Lost Mode (mensaje + teléfono visible)
     try {
         const lostResp = await axios.post(
-            `https://mdm.manageengine.com/api/v1/mdm/devices/${deviceId}/actions/enable_lost_mode`,
+            `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/enable_lost_mode`,
             { lock_message: lockMessage, phone_number: lockPhone },
             { headers, timeout: 30000, validateStatus: () => true }
         );
