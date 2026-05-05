@@ -1,12 +1,16 @@
 /**
- * MDM Service para ManageEngine - VERSIÓN CORREGIDA
- * Fixes:
- *   #1 Verifica respuesta REAL de Zoho (no asume éxito por HTTP 200)
- *   #2 Detecta dispositivos offline / agente caído
- *   #3 Usa lock_device + lost_mode combinados
- *   #4 Paginación completa de dispositivos
- *   #5 Normalización robusta de IMEI
- *   #6 Logging persistente de intentos fallidos
+ * MDM Service para ManageEngine - VERSIÓN CORREGIDA SIN PAGINACIÓN
+ *
+ * Cambios respecto a la versión anterior:
+ *   - REMOVIDA paginación (Zoho devolvía HTTP 400 con page/size)
+ *   - Vuelve al GET simple sin parámetros que sí funciona
+ *   - Conserva todas las demás mejoras:
+ *       * Verifica respuesta REAL de Zoho (no asume éxito por HTTP 200)
+ *       * Detecta dispositivos offline / agente caído
+ *       * Combina lock_device + lost_mode
+ *       * Normalización robusta de IMEI
+ *       * Función diagnoseImei
+ *       * Mejor logging de errores
  */
 
 const axios = require('axios');
@@ -14,7 +18,7 @@ const axios = require('axios');
 const tokenCache = new Map();
 
 // ============================================================
-// AUTENTICACIÓN (igual que antes pero con mejor error handling)
+// AUTENTICACIÓN
 // ============================================================
 
 async function refreshAccessToken(account) {
@@ -55,14 +59,14 @@ async function refreshAccessToken(account) {
     } catch (error) {
         const errMsg = error.response?.data?.error || error.response?.data || error.message;
         console.error(`❌ Error renovando token para ${account.nombre}:`, errMsg);
-        
+
         try {
             await account.update({
                 lastStatus: 'error',
                 lastCheckedAt: new Date()
             });
         } catch (dbError) {}
-        
+
         throw new Error(`Error de autenticación MDM: ${account.nombre} — ${typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)}`);
     }
 }
@@ -72,7 +76,7 @@ async function getValidToken(account) {
     if (cached && cached.expiresAt > new Date()) {
         return cached.accessToken;
     }
-    
+
     if (account.accessToken && account.tokenExpiresAt) {
         const expiresAt = new Date(account.tokenExpiresAt);
         if (!isNaN(expiresAt.getTime()) && expiresAt > new Date()) {
@@ -83,7 +87,7 @@ async function getValidToken(account) {
             return account.accessToken;
         }
     }
-    
+
     return await refreshAccessToken(account);
 }
 
@@ -122,53 +126,41 @@ async function getAccountForStore(MdmAccount, tiendaId) {
 }
 
 // ============================================================
-// FIX #4: PAGINACIÓN COMPLETA DE DISPOSITIVOS
+// LISTAR DISPOSITIVOS — SIN PAGINACIÓN
+// Zoho rechazaba ?page=N&size=N con HTTP 400.
+// Volvemos al GET simple original.
 // ============================================================
 
 async function getDevicesFromAccount(account) {
     const headers = await getHeaders(account);
-    const allDevices = [];
-    let page = 1;
-    const pageSize = 200;
-    let hasMore = true;
-    let safety = 0;
 
-    while (hasMore && safety < 50) {
-        safety++;
-        try {
-            const response = await axios.get('https://mdm.manageengine.com/api/v1/mdm/devices', {
-                headers,
-                params: { page, size: pageSize },
-                timeout: 30000
-            });
-
-            const devices = response.data.devices || [];
-            allDevices.push(...devices);
-
-            // Si vino menos del page size, ya no hay más páginas
-            if (devices.length < pageSize) {
-                hasMore = false;
-            } else {
-                page++;
-            }
-        } catch (error) {
-            console.error(`Error obteniendo página ${page} de ${account.nombre}:`, error.message);
-            hasMore = false;
-        }
-    }
-
-    const activeCount = allDevices.filter(d => d.is_removed === 'false' || d.is_removed === false).length;
     try {
-        await account.update({ deviceCount: activeCount });
-    } catch (e) {}
+        const response = await axios.get('https://mdm.manageengine.com/api/v1/mdm/devices', {
+            headers,
+            timeout: 30000
+        });
 
-    return allDevices;
+        const devices = response.data.devices || [];
+        const activeCount = devices.filter(d => d.is_removed === 'false' || d.is_removed === false).length;
+
+        try {
+            await account.update({ deviceCount: activeCount });
+        } catch (e) {}
+
+        console.log(`✅ ${account.nombre}: ${devices.length} dispositivos obtenidos (${activeCount} activos)`);
+        return devices;
+    } catch (error) {
+        const status = error.response?.status;
+        const body = error.response?.data;
+        console.error(`❌ Error obteniendo dispositivos de ${account.nombre}: HTTP ${status}`, body || error.message);
+        return [];
+    }
 }
 
 async function getAllDevices(MdmAccount) {
     const accounts = await getActiveAccounts(MdmAccount);
     const allDevices = [];
-    
+
     for (const account of accounts) {
         try {
             const devices = await getDevicesFromAccount(account);
@@ -181,12 +173,12 @@ async function getAllDevices(MdmAccount) {
             console.error(`Error obteniendo dispositivos de ${account.nombre}:`, error.message);
         }
     }
-    
+
     return allDevices;
 }
 
 // ============================================================
-// FIX #5: NORMALIZACIÓN ROBUSTA DE IMEI
+// NORMALIZACIÓN ROBUSTA DE IMEI
 // ============================================================
 
 function normalizeImei(imei) {
@@ -197,7 +189,7 @@ function normalizeImei(imei) {
 function imeiMatches(deviceImei, searchImei) {
     const search = normalizeImei(searchImei);
     if (!search) return false;
-    
+
     if (Array.isArray(deviceImei)) {
         return deviceImei.some(i => normalizeImei(i) === search);
     }
@@ -206,17 +198,17 @@ function imeiMatches(deviceImei, searchImei) {
 
 async function findDeviceByImei(MdmAccount, imei) {
     const accounts = await getActiveAccounts(MdmAccount);
-    
+
     for (const account of accounts) {
         try {
             const devices = await getDevicesFromAccount(account);
-            
+
             const device = devices.find(d => {
                 const removed = d.is_removed === 'true' || d.is_removed === true;
                 if (removed) return false;
                 return imeiMatches(d.imei, imei);
             });
-            
+
             if (device) {
                 return { account, device };
             }
@@ -224,18 +216,17 @@ async function findDeviceByImei(MdmAccount, imei) {
             console.error(`Error buscando en ${account.nombre}:`, error.message);
         }
     }
-    
+
     return { account: null, device: null };
 }
 
 // ============================================================
-// FIX #2: VERIFICAR QUE EL DISPOSITIVO ESTÉ ALCANZABLE
+// VERIFICAR ALCANZABILIDAD DEL DISPOSITIVO
 // ============================================================
 
 function checkDeviceReachability(device) {
     const warnings = [];
-    
-    // Last contact time (formato Zoho: epoch ms o ISO)
+
     const lastContact = device.last_contacted_time || device.last_contact_time || device.last_communication;
     if (lastContact) {
         const lastDate = new Date(isNaN(lastContact) ? lastContact : Number(lastContact));
@@ -248,17 +239,15 @@ function checkDeviceReachability(device) {
     } else {
         warnings.push('Sin información de último contacto');
     }
-    
-    // Status del agente
+
     if (device.device_status && device.device_status.toLowerCase().includes('inactiv')) {
         warnings.push(`Estado del dispositivo: ${device.device_status}`);
     }
-    
-    // Agente desinstalado
+
     if (device.agent_status === 'uninstalled' || device.is_agent_active === false) {
         warnings.push('Agente MDM desinstalado o inactivo');
     }
-    
+
     return {
         reachable: warnings.length === 0,
         warnings
@@ -266,7 +255,7 @@ function checkDeviceReachability(device) {
 }
 
 // ============================================================
-// FIX #1 + #3: BLOQUEO REAL CON VERIFICACIÓN DE RESPUESTA
+// BLOQUEO REAL CON VERIFICACIÓN DE RESPUESTA
 // ============================================================
 
 async function lockDevice(account, deviceId, message, phone, options = {}) {
@@ -281,18 +270,18 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
         steps: []
     };
 
-    // STEP 1: Lock device (bloqueo administrativo)
+    // STEP 1: Lock device
     try {
         const lockResp = await axios.post(
             `https://mdm.manageengine.com/api/v1/mdm/devices/${deviceId}/actions/lock_device`,
             { lock_message: lockMessage },
             { headers, timeout: 30000, validateStatus: () => true }
         );
-        
+
         const ok = lockResp.status >= 200 && lockResp.status < 300;
         const body = lockResp.data || {};
         const apiSuccess = ok && body.status !== 'FAILED' && body.status !== 'ERROR' && !body.error_code;
-        
+
         results.steps.push({
             step: 'lock_device',
             httpStatus: lockResp.status,
@@ -300,7 +289,7 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
             success: apiSuccess,
             response: body
         });
-        
+
         if (!apiSuccess) {
             throw new Error(`lock_device falló: HTTP ${lockResp.status}, body: ${JSON.stringify(body)}`);
         }
@@ -309,18 +298,18 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
         throw new Error(`Bloqueo falló en step lock_device: ${e.message}`);
     }
 
-    // STEP 2: Lost Mode (mensaje + teléfono visible en pantalla bloqueada)
+    // STEP 2: Lost Mode (mensaje + teléfono visible)
     try {
         const lostResp = await axios.post(
             `https://mdm.manageengine.com/api/v1/mdm/devices/${deviceId}/actions/enable_lost_mode`,
             { lock_message: lockMessage, phone_number: lockPhone },
             { headers, timeout: 30000, validateStatus: () => true }
         );
-        
+
         const ok = lostResp.status >= 200 && lostResp.status < 300;
         const body = lostResp.data || {};
         const apiSuccess = ok && body.status !== 'FAILED' && !body.error_code;
-        
+
         results.steps.push({
             step: 'enable_lost_mode',
             httpStatus: lostResp.status,
@@ -329,7 +318,6 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
             response: body
         });
     } catch (e) {
-        // No fatal — el lock principal ya pasó
         results.steps.push({ step: 'enable_lost_mode', success: false, error: e.message });
     }
 
@@ -368,29 +356,28 @@ async function unlockDevice(account, deviceId) {
 }
 
 // ============================================================
-// LOCK / UNLOCK por IMEI con diagnóstico completo
+// LOCK / UNLOCK por IMEI
 // ============================================================
 
 async function lockDeviceByImei(MdmAccount, imei, message, phone) {
     const { account, device } = await findDeviceByImei(MdmAccount, imei);
-    
+
     if (!account || !device) {
         throw new Error(`Dispositivo con IMEI ${imei} no encontrado en ninguna cuenta MDM. Verifica que el agente esté instalado y el equipo enrolado.`);
     }
-    
-    // FIX #2: Avisar si el dispositivo no es alcanzable
+
     const reach = checkDeviceReachability(device);
-    
+
     const result = await lockDevice(account, device.device_id, message, phone);
     result.imei = imei;
     result.deviceName = device.name || device.device_name;
     result.accountName = account.nombre;
     result.reachability = reach;
-    
+
     if (!reach.reachable) {
         result.warning = `⚠️ El comando se envió pero el dispositivo puede no recibirlo: ${reach.warnings.join('; ')}`;
     }
-    
+
     return result;
 }
 
@@ -446,13 +433,12 @@ async function checkAllAccounts(MdmAccount) {
 }
 
 // ============================================================
-// NUEVO: Diagnóstico de un IMEI sin bloquear
-// Útil para ver por qué un equipo no se está bloqueando
+// DIAGNÓSTICO DE UN IMEI SIN BLOQUEAR
 // ============================================================
 
 async function diagnoseImei(MdmAccount, imei) {
     const { account, device } = await findDeviceByImei(MdmAccount, imei);
-    
+
     if (!account) {
         return {
             found: false,
@@ -462,7 +448,7 @@ async function diagnoseImei(MdmAccount, imei) {
             suggestion: 'Verifica que el agente MDM esté instalado y enrolado, y que el IMEI esté bien capturado en tu BD'
         };
     }
-    
+
     const reach = checkDeviceReachability(device);
     return {
         found: true,
