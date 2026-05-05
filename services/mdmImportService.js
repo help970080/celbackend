@@ -73,27 +73,27 @@ async function importAllFromZoho(models, options = {}) {
 
                     if (existing) {
                         const updateData = {
-                            device_number: deviceNumber,
-                            mdm_account_id: account.id
+                            deviceNumber: deviceNumber,
+                            mdmAccountId: account.id
                         };
                         if (existing.status !== 'locked') {
                             updateData.status = 'active';
                         }
-                        // Solo asignar tienda_id si está vacía
-                        if (!existing.tienda_id) {
-                            updateData.tienda_id = tiendaId;
+                        // Solo asignar tiendaId si está vacía
+                        if (!existing.tiendaId && !existing.tienda_id) {
+                            updateData.tiendaId = tiendaId;
                         }
                         await existing.update(updateData);
                         results.updated++;
                     } else {
                         await DeviceMdm.create({
                             imei,
-                            device_number: deviceNumber,
+                            deviceNumber: deviceNumber,
                             status: 'active',
-                            mdm_account_id: account.id,
-                            tienda_id: tiendaId,
-                            sale_id: null,
-                            client_id: null
+                            mdmAccountId: account.id,
+                            tiendaId: tiendaId,
+                            saleId: null,
+                            clientId: null
                         });
                         results.created++;
                     }
