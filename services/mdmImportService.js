@@ -59,31 +59,39 @@ async function importAllFromZoho(models, options = {}) {
                     }
 
                     const deviceName = zd.name || zd.device_name || `Device-${zd.device_id}`;
-                    const deviceNumber = zd.device_id || zd.deviceId;
+
+                    // FIX: device_number nunca null
+                    let deviceNumber = zd.device_id || zd.deviceId || zd.udid;
+                    if (!deviceNumber) deviceNumber = `IMEI-${imei}`;
+                    deviceNumber = String(deviceNumber);
+
+                    // FIX: tienda_id nunca null (default 1 si la cuenta no la tiene)
+                    const tiendaId = account.tiendaId || 1;
 
                     // Buscar si ya existe
                     const existing = await DeviceMdm.findOne({ where: { imei } });
 
                     if (existing) {
-                        // Actualizar datos pero NO tocar sale_id ni client_id si ya están
                         const updateData = {
                             device_number: deviceNumber,
                             mdm_account_id: account.id
                         };
-                        // Solo actualizar status si no está bloqueado en BD
                         if (existing.status !== 'locked') {
                             updateData.status = 'active';
+                        }
+                        // Solo asignar tienda_id si está vacía
+                        if (!existing.tienda_id) {
+                            updateData.tienda_id = tiendaId;
                         }
                         await existing.update(updateData);
                         results.updated++;
                     } else {
-                        // Crear nuevo
                         await DeviceMdm.create({
                             imei,
                             device_number: deviceNumber,
                             status: 'active',
                             mdm_account_id: account.id,
-                            tienda_id: account.tiendaId || null,
+                            tienda_id: tiendaId,
                             sale_id: null,
                             client_id: null
                         });
