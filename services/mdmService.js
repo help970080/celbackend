@@ -368,7 +368,11 @@ async function lockDeviceByImei(MdmAccount, imei, message, phone) {
 
     const reach = checkDeviceReachability(device);
 
-    const result = await lockDevice(account, device.device_id, message, phone);
+    // FIX CRÍTICO: device_id siempre como string (Zoho usa IDs de 18 dígitos
+    // que pierden precisión si JavaScript los trata como Number)
+    const deviceIdStr = String(device.device_id);
+
+    const result = await lockDevice(account, deviceIdStr, message, phone);
     result.imei = imei;
     result.deviceName = device.name || device.device_name;
     result.accountName = account.nombre;
@@ -386,7 +390,8 @@ async function unlockDeviceByImei(MdmAccount, imei) {
     if (!account || !device) {
         throw new Error(`Dispositivo con IMEI ${imei} no encontrado en ninguna cuenta MDM`);
     }
-    return await unlockDevice(account, device.device_id);
+    // FIX: device_id siempre como string (precisión de IDs de 18 dígitos)
+    return await unlockDevice(account, String(device.device_id));
 }
 
 // ============================================================
