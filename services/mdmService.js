@@ -276,9 +276,9 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
     console.log(`🔒 [lockDevice] account=${account.nombre} deviceId="${safeDeviceId}" (len=${safeDeviceId.length}) typeof=${typeof safeDeviceId}`);
 
     // STEP 1: Lock device
-    // ManageEngine MDM Cloud usa endpoint diferente: lock en lugar de actions/lock_device
-    // Probamos el endpoint correcto según documentación oficial
-    const lockUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/lock`;
+    // ManageEngine MDM oficial: POST /api/v1/mdm/devices/{id}/actions/{action_name}
+    // donde action_name = 'lock' (según documentación oficial)
+    const lockUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/lock`;
     console.log(`🔒 [lockDevice] URL: ${lockUrl}`);
 
     try {
@@ -340,28 +340,35 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
 
 async function unlockDevice(account, deviceId) {
     const headers = await getHeaders(account);
-    const results = { success: false, action: 'unlocked', deviceId, steps: [] };
+    const safeDeviceId = String(deviceId).trim();
+    const results = { success: false, action: 'unlocked', deviceId: safeDeviceId, steps: [] };
 
+    console.log(`🔓 [unlockDevice] account=${account.nombre} deviceId="${safeDeviceId}"`);
+
+    // STEP 1: Disable lost mode
     try {
         const r1 = await axios.post(
-            `https://mdm.manageengine.com/api/v1/mdm/devices/${deviceId}/actions/disable_lost_mode`,
+            `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/disable_lost_mode`,
             {},
             { headers, timeout: 30000, validateStatus: () => true }
         );
+        console.log(`🔓 [unlockDevice] disable_lost_mode status=${r1.status}`);
         results.steps.push({ step: 'disable_lost_mode', httpStatus: r1.status, response: r1.data });
     } catch (e) {
         results.steps.push({ step: 'disable_lost_mode', error: e.message });
     }
 
+    // STEP 2: Clear passcode (esto desbloquea el equipo en Android)
     try {
         const r2 = await axios.post(
-            `https://mdm.manageengine.com/api/v1/mdm/devices/${deviceId}/actions/unlock_device`,
+            `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/clear_passcode`,
             {},
             { headers, timeout: 30000, validateStatus: () => true }
         );
-        results.steps.push({ step: 'unlock_device', httpStatus: r2.status, response: r2.data });
+        console.log(`🔓 [unlockDevice] clear_passcode status=${r2.status}`);
+        results.steps.push({ step: 'clear_passcode', httpStatus: r2.status, response: r2.data });
     } catch (e) {
-        results.steps.push({ step: 'unlock_device', error: e.message });
+        results.steps.push({ step: 'clear_passcode', error: e.message });
     }
 
     results.success = true;
