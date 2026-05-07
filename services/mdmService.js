@@ -259,6 +259,10 @@ function checkDeviceReachability(device) {
 // ============================================================
 
 async function lockDevice(account, deviceId, message, phone, options = {}) {
+    // FORZAR token fresco — invalidar cache de esta cuenta antes de obtener headers
+    // Esto previene el HTTP 401 cuando el cron tarda procesando muchas cuentas
+    // y el token de esta cuenta ya expiró pero seguía en cache
+    tokenCache.delete(account.id);
     const headers = await getHeaders(account);
     const lockMessage = message || 'Dispositivo bloqueado por falta de pago. Contacte a CelExpress.';
     const lockPhone = phone || process.env.CELEXPRESS_PHONE || '';
@@ -280,12 +284,26 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
     const lostUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/enable_lost_mode`;
     console.log(`🔒 [lockDevice] URL Lost Mode: ${lostUrl}`);
 
-    try {
-        const lostResp = await axios.post(
+    // Función auxiliar para hacer el POST con un token específico
+    async function attemptLostMode(authHeaders) {
+        return await axios.post(
             lostUrl,
             { lock_message: lockMessage, phone_number: lockPhone },
-            { headers, timeout: 30000, validateStatus: () => true }
+            { headers: authHeaders, timeout: 30000, validateStatus: () => true }
         );
+    }
+
+    try {
+        let lostResp = await attemptLostMode(headers);
+
+        // RETRY automático si dio 401: el token está caducado, fuerza renovación y reintenta
+        if (lostResp.status === 401) {
+            console.log(`🔒 [lockDevice] HTTP 401 detectado, forzando renovación de token y reintentando...`);
+            tokenCache.delete(account.id);
+            const freshHeaders = await getHeaders(account);
+            lostResp = await attemptLostMode(freshHeaders);
+            console.log(`🔒 [lockDevice] Reintento status=${lostResp.status}`);
+        }
 
         const ok = lostResp.status >= 200 && lostResp.status < 300;
         const body = lostResp.data || {};
