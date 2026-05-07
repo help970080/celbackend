@@ -275,63 +275,61 @@ async function lockDevice(account, deviceId, message, phone, options = {}) {
 
     console.log(`🔒 [lockDevice] account=${account.nombre} deviceId="${safeDeviceId}" (len=${safeDeviceId.length}) typeof=${typeof safeDeviceId}`);
 
-    // STEP 1: Lock device
-    // ManageEngine MDM oficial: POST /api/v1/mdm/devices/{id}/actions/{action_name}
-    // donde action_name = 'lock' (según documentación oficial)
-    const lockUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/lock`;
-    console.log(`🔒 [lockDevice] URL: ${lockUrl}`);
+    // STEP 1: Enable Lost Mode (acción principal — funciona en cualquier Android enrolado)
+    // Este bloquea la pantalla con mensaje + teléfono visible
+    const lostUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/enable_lost_mode`;
+    console.log(`🔒 [lockDevice] URL Lost Mode: ${lostUrl}`);
 
-    try {
-        const lockResp = await axios.post(
-            lockUrl,
-            { lock_message: lockMessage },
-            { headers, timeout: 30000, validateStatus: () => true }
-        );
-
-        const ok = lockResp.status >= 200 && lockResp.status < 300;
-        const body = lockResp.data || {};
-        const apiSuccess = ok && body.status !== 'FAILED' && body.status !== 'ERROR' && !body.error_code;
-
-        console.log(`🔒 [lockDevice] response status=${lockResp.status} body=${JSON.stringify(body).substring(0,200)}`);
-
-        results.steps.push({
-            step: 'lock_device',
-            url: lockUrl,
-            httpStatus: lockResp.status,
-            apiStatus: body.status || 'unknown',
-            success: apiSuccess,
-            response: body
-        });
-
-        if (!apiSuccess) {
-            throw new Error(`lock_device falló: HTTP ${lockResp.status}, URL: ${lockUrl}, body: ${JSON.stringify(body)}`);
-        }
-    } catch (e) {
-        results.steps.push({ step: 'lock_device', success: false, error: e.message });
-        throw new Error(`Bloqueo falló en step lock_device: ${e.message}`);
-    }
-
-    // STEP 2: Lost Mode (mensaje + teléfono visible)
     try {
         const lostResp = await axios.post(
-            `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/enable_lost_mode`,
+            lostUrl,
             { lock_message: lockMessage, phone_number: lockPhone },
             { headers, timeout: 30000, validateStatus: () => true }
         );
 
         const ok = lostResp.status >= 200 && lostResp.status < 300;
         const body = lostResp.data || {};
-        const apiSuccess = ok && body.status !== 'FAILED' && !body.error_code;
+        const apiSuccess = ok && body.status !== 'FAILED' && body.status !== 'ERROR' && !body.error_code;
+
+        console.log(`🔒 [lockDevice] Lost Mode response status=${lostResp.status} body=${JSON.stringify(body).substring(0,200)}`);
 
         results.steps.push({
             step: 'enable_lost_mode',
+            url: lostUrl,
             httpStatus: lostResp.status,
             apiStatus: body.status || 'unknown',
             success: apiSuccess,
             response: body
         });
+
+        if (!apiSuccess) {
+            throw new Error(`enable_lost_mode falló: HTTP ${lostResp.status}, body: ${JSON.stringify(body)}`);
+        }
     } catch (e) {
         results.steps.push({ step: 'enable_lost_mode', success: false, error: e.message });
+        throw new Error(`Bloqueo falló: ${e.message}`);
+    }
+
+    // STEP 2 (opcional): intentar también lock_device para reforzar
+    // Si falla con HTTP 412 ("comando no aplicable"), no es problema
+    try {
+        const lockUrl = `https://mdm.manageengine.com/api/v1/mdm/devices/${safeDeviceId}/actions/lock`;
+        const lockResp = await axios.post(
+            lockUrl,
+            { lock_message: lockMessage },
+            { headers, timeout: 30000, validateStatus: () => true }
+        );
+        console.log(`🔒 [lockDevice] lock secundario status=${lockResp.status} (ok si es 412)`);
+        results.steps.push({
+            step: 'lock',
+            httpStatus: lockResp.status,
+            success: lockResp.status >= 200 && lockResp.status < 300,
+            note: lockResp.status === 412 ? 'Comando no aplicable, no es problema' : 'OK',
+            response: lockResp.data
+        });
+    } catch (e) {
+        // Silencioso — no fatal
+        results.steps.push({ step: 'lock', success: false, error: e.message, note: 'No fatal' });
     }
 
     results.success = true;
