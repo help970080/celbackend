@@ -1,4 +1,4 @@
-// server.js - CON INTEGRACIÓN MDM + TANDAS + LLAMADAS AUTOMÁTICAS TWILIO
+// server.js - CON INTEGRACIÓN MDM + TANDAS + LLAMADAS AUTOMÁTICAS TWILIO + IMEI LINK
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const cors = require('cors');
@@ -17,6 +17,27 @@ const sequelize = new Sequelize(process.env.DATABASE_URL, {
 
 const models = require('./models')(sequelize);
 let isRegistrationAllowed = false;
+
+// ============================================================
+// ⭐ HELPERS IMEI (usar en endpoints de venta)
+// ============================================================
+function normalizeImei(raw) {
+    if (raw === null || raw === undefined) return null;
+    const digits = String(raw).replace(/\D/g, '');
+    if (digits.length < 14 || digits.length > 17) return null;
+    return digits;
+}
+
+function isValidImeiLuhn(imei) {
+    if (!imei || imei.length !== 15) return imei && imei.length >= 14;
+    let sum = 0;
+    for (let i = 0; i < 15; i++) {
+        let d = parseInt(imei[i], 10);
+        if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+        sum += d;
+    }
+    return sum % 10 === 0;
+}
 
 sequelize.authenticate()
   .then(() => {
@@ -402,6 +423,232 @@ sequelize.authenticate()
     const initLlamadasRoutes = require('./routes/llamadasRoutes');
     app.use('/api/llamadas', authMiddleware, initLlamadasRoutes(models, sequelize));
     console.log('✅ Rutas de Llamadas Automáticas montadas.');
+
+    // =========================================================
+    // ⭐ RUTAS IMEI ↔ VENTA (NUEVO - vinculación automática para MDM)
+    // =========================================================
+
+    // GET /api/imei/check/:imei → verifica disponibilidad antes de cerrar venta
+    app.get('/api/imei/check/:imei', authMiddleware, async (req, res) => {
+        try {
+            const imei = normalizeImei(req.params.imei);
+            if (!imei) {
+                return res.status(400).json({
+                    available: false,
+                    reason: 'INVALID_FORMAT',
+                    message: 'IMEI debe tener 14-17 dígitos'
+                });
+            }
+            if (!isValidImeiLuhn(imei)) {
+                return res.status(400).json({
+                    available: false,
+                    reason: 'INVALID_LUHN',
+                    message: 'IMEI inválido (verifica la captura)'
+                });
+            }
+
+            const [rows] = await sequelize.query(
+                `SELECT d.id, d.sale_id, d.client_id, d.status, d.brand, d.model,
+                        s.status AS sale_status,
+                        c."firstName" AS client_first, c."lastName" AS client_last
+                 FROM devices_mdm d
+                 LEFT JOIN sales s ON s.id = d.sale_id
+                 LEFT JOIN clients c ON c.id = d.client_id
+                 WHERE d.imei = :imei
+                 LIMIT 1`,
+                { replacements: { imei } }
+            );
+
+            if (rows.length === 0) {
+                return res.json({ available: true, imei });
+            }
+
+            const r = rows[0];
+            const ocupado = r.sale_id && ['completed', 'pending', 'overdue'].includes(r.sale_status);
+
+            return res.json({
+                available: !ocupado,
+                imei,
+                existing: {
+                    deviceId: r.id,
+                    saleId: r.sale_id,
+                    clientId: r.client_id,
+                    clientName: `${r.client_first || ''} ${r.client_last || ''}`.trim() || null,
+                    brand: r.brand,
+                    model: r.model,
+                    saleStatus: r.sale_status
+                },
+                message: ocupado
+                    ? `IMEI ya vendido a ${r.client_first || 'cliente #' + r.client_id}`
+                    : 'IMEI pre-enrolado disponible'
+            });
+        } catch (err) {
+            console.error('[IMEI check] error:', err);
+            res.status(500).json({ available: false, error: err.message });
+        }
+    });
+
+    // POST /api/sales/create-with-imei → crea venta + vincula IMEI atómicamente
+    app.post('/api/sales/create-with-imei', authMiddleware, async (req, res) => {
+        const t = await sequelize.transaction();
+        try {
+            const {
+                clientId, totalAmount, isCredit, downPayment, interestRate,
+                paymentFrequency, numberOfPayments, weeklyPaymentAmount,
+                balanceDue, assignedCollectorId, status,
+                imei, deviceBrand, deviceModel, serialNumber, mdmAccountId
+            } = req.body;
+
+            if (!clientId) {
+                await t.rollback();
+                return res.status(400).json({ error: 'clientId requerido' });
+            }
+            const imeiN = normalizeImei(imei);
+            if (!imeiN) {
+                await t.rollback();
+                return res.status(400).json({ error: 'IMEI requerido (14-17 dígitos)' });
+            }
+            if (!isValidImeiLuhn(imeiN)) {
+                await t.rollback();
+                return res.status(400).json({ error: 'IMEI no pasa validación Luhn. Verifica captura.' });
+            }
+
+            const tiendaId = req.user?.tiendaId || req.user?.tienda_id || 1;
+
+            // Pre-check: ¿IMEI ya vendido?
+            const [existing] = await sequelize.query(
+                `SELECT d.id, d.sale_id, d.client_id, s.status AS sale_status
+                 FROM devices_mdm d
+                 LEFT JOIN sales s ON s.id = d.sale_id
+                 WHERE d.imei = :imei LIMIT 1`,
+                { replacements: { imei: imeiN }, transaction: t }
+            );
+
+            if (existing.length > 0) {
+                const e = existing[0];
+                if (e.sale_id && ['completed', 'pending', 'overdue'].includes(e.sale_status)) {
+                    await t.rollback();
+                    return res.status(409).json({
+                        error: 'IMEI_ALREADY_LINKED',
+                        message: `IMEI ya vinculado a venta #${e.sale_id} (cliente #${e.client_id})`,
+                        existingSaleId: e.sale_id,
+                        existingClientId: e.client_id
+                    });
+                }
+            }
+
+            // 1) Crear venta
+            const sale = await models.Sale.create({
+                clientId,
+                saleDate: new Date(),
+                totalAmount,
+                isCredit: !!isCredit,
+                downPayment: downPayment || 0,
+                interestRate: interestRate || 0,
+                paymentFrequency: paymentFrequency || 'weekly',
+                numberOfPayments,
+                weeklyPaymentAmount,
+                balanceDue: balanceDue !== undefined ? balanceDue : (totalAmount - (downPayment || 0)),
+                status: status || 'completed',
+                assignedCollectorId,
+                tiendaId,
+                paymentsMade: 0
+            }, { transaction: t });
+
+            // 2) Vincular IMEI: UPDATE si existe pre-enrolado, INSERT si no
+            let action;
+            if (existing.length > 0) {
+                await sequelize.query(
+                    `UPDATE devices_mdm
+                     SET sale_id = :saleId, client_id = :clientId, tienda_id = :tiendaId,
+                         brand = COALESCE(:brand, brand),
+                         model = COALESCE(:model, model),
+                         serial_number = COALESCE(:serial, serial_number),
+                         mdm_account_id = COALESCE(:mdmAcc, mdm_account_id),
+                         status = 'active',
+                         notes = COALESCE(notes, '') || E'\n[' || NOW()::text || '] Vinculado a venta #' || :saleId,
+                         updated_at = NOW()
+                     WHERE imei = :imei`,
+                    {
+                        replacements: {
+                            saleId: sale.id, clientId, tiendaId,
+                            brand: deviceBrand || null,
+                            model: deviceModel || null,
+                            serial: serialNumber || null,
+                            mdmAcc: mdmAccountId || null,
+                            imei: imeiN
+                        },
+                        transaction: t
+                    }
+                );
+                action = 'linked';
+            } else {
+                await sequelize.query(
+                    `INSERT INTO devices_mdm
+                        (device_number, imei, serial_number, brand, model,
+                         sale_id, client_id, mdm_account_id, status, tienda_id, notes,
+                         created_at, updated_at)
+                     VALUES
+                        (:imei, :imei, :serial, :brand, :model,
+                         :saleId, :clientId, :mdmAcc, 'active', :tiendaId,
+                         '[' || NOW()::text || '] Creado al cerrar venta #' || :saleId,
+                         NOW(), NOW())`,
+                    {
+                        replacements: {
+                            imei: imeiN,
+                            serial: serialNumber || null,
+                            brand: deviceBrand || null,
+                            model: deviceModel || null,
+                            saleId: sale.id, clientId,
+                            mdmAcc: mdmAccountId || null,
+                            tiendaId
+                        },
+                        transaction: t
+                    }
+                );
+                action = 'created';
+            }
+
+            await t.commit();
+
+            return res.status(201).json({
+                success: true,
+                sale,
+                imei: imeiN,
+                action,
+                message: action === 'created'
+                    ? 'Venta creada y dispositivo enrolado.'
+                    : 'Venta creada y dispositivo pre-enrolado vinculado.'
+            });
+
+        } catch (err) {
+            await t.rollback();
+            console.error('[create-with-imei] error:', err);
+            if (err.message && err.message.includes('idx_devices_mdm_imei_unique')) {
+                return res.status(409).json({
+                    error: 'IMEI_DUPLICATE',
+                    message: 'IMEI duplicado (race condition). Reintenta.'
+                });
+            }
+            return res.status(500).json({ error: err.message });
+        }
+    });
+
+    // GET /api/imei/by-sale/:saleId → para mdmCronJob (recuperar IMEI por venta)
+    app.get('/api/imei/by-sale/:saleId', authMiddleware, async (req, res) => {
+        try {
+            const [rows] = await sequelize.query(
+                `SELECT id, imei, brand, model, status, mdm_account_id, client_id
+                 FROM devices_mdm WHERE sale_id = :saleId`,
+                { replacements: { saleId: req.params.saleId } }
+            );
+            res.json({ devices: rows });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    console.log('✅ Rutas IMEI-Venta montadas (/api/imei/check, /api/sales/create-with-imei).');
 
     // =========================================================
     // ⭐ CRON JOBS
