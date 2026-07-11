@@ -372,6 +372,11 @@ sequelize.authenticate()
     const initClientDocumentsRoutes = require('./routes/clientDocumentsRoutes');
     app.use('/api/clients', authMiddleware, initClientDocumentsRoutes(models));
 
+    // ⭐ POS UNIFICADO (checkout): items + mix por línea + IMEI opcional + MDM.
+    // Montado ANTES de salePaymentRoutes para que /api/sales/checkout tenga prioridad.
+    const initCheckoutRoutes = require('./routes/checkoutRoutes');
+    app.use('/api/sales', authMiddleware, initCheckoutRoutes(models, sequelize));
+
     const initSalePaymentRoutes = require('./routes/salePaymentRoutes');
     app.use('/api/sales', authMiddleware, initSalePaymentRoutes(models, sequelize));
 
