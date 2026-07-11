@@ -1,18 +1,9 @@
 // routes/checkoutRoutes.js
-// ============================================================
-// POS UNIFICADO — un solo camino de venta:
-//   - cualquier artículo (no solo celulares)
-//   - ticket mixto: cada línea es 'contado' o 'credito'
-//   - IMEI opcional: solo para equipos MDM (requires_imei) que van a crédito
-//   - enrola a devices_mdm en la MISMA transacción
-//   - descuenta stock con lock, crea SaleItem, registra el pago de hoy
-//
-// Reemplaza la necesidad de /api/sales/create-with-imei.
-// Se monta ADITIVO, sin tocar el POST /api/sales/ existente:
+// POS unificado: cualquier artículo + ticket mixto (contado/crédito por línea).
+// Sin MDM/IMEI (se puede añadir después). Aditivo, no toca POST /api/sales/.
 //   const initCheckoutRoutes = require('./routes/checkoutRoutes');
 //   app.use('/api/sales', authMiddleware, initCheckoutRoutes(models, sequelize));
-// (queda como POST /api/sales/checkout)
-// ============================================================
+// → POST /api/sales/checkout
 
 const express = require('express');
 const router = express.Router();
@@ -22,31 +13,15 @@ const moment = require('moment-timezone');
 
 const TIMEZONE = 'America/Mexico_City';
 
-// ---- Helpers IMEI (mismos criterios que server.js) ----
-function normalizeImei(raw) {
-    if (raw === null || raw === undefined) return null;
-    const digits = String(raw).replace(/\D/g, '');
-    if (digits.length < 14 || digits.length > 17) return null;
-    return digits;
-}
-function isValidImeiLuhn(imei) {
-    if (!imei || imei.length !== 15) return !!(imei && imei.length >= 14);
-    let sum = 0;
-    for (let i = 0; i < 15; i++) {
-        let d = parseInt(imei[i], 10);
-        if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
-        sum += d;
-    }
-    return sum % 10 === 0;
-}
-
 function calcularProximaFechaPago(fechaBase, frecuencia, pagosRealizados = 0) {
     const fecha = moment(fechaBase).tz(TIMEZONE);
     switch (frecuencia) {
-        case 'biweekly': fecha.add((pagosRealizados + 1) * 2, 'weeks'); break;
-        case 'monthly':  fecha.add(pagosRealizados + 1, 'months'); break;
+        case 'biweekly':
+        case 'fortnightly': fecha.add((pagosRealizados + 1) * 2, 'weeks'); break;
+        case 'monthly':     fecha.add(pagosRealizados + 1, 'months'); break;
+        case 'daily':       fecha.add(pagosRealizados + 1, 'days'); break;
         case 'weekly':
-        default:         fecha.add(pagosRealizados + 1, 'weeks');
+        default:            fecha.add(pagosRealizados + 1, 'weeks');
     }
     return fecha.format('YYYY-MM-DD');
 }
@@ -56,19 +31,18 @@ const money = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const initCheckoutRoutes = (models, sequelize) => {
     const { Sale, Client, Product, Payment, SaleItem, User, AuditLog } = models;
 
-    // POST /api/sales/checkout
     router.post('/checkout',
         authorizeRoles(['super_admin', 'regular_admin', 'sales_admin']),
         applyStoreFilter,
         async (req, res) => {
             const {
                 clientId,
-                items,                       // [{ productId, quantity, plan:'contado'|'credito', imei? }]
+                items,                       // [{ productId, quantity, plan:'contado'|'credito' }]
                 assignedCollectorId,
                 paymentFrequency = 'weekly',
-                numberOfPayments,            // requerido si hay financiado
-                downPaymentPct,              // % de enganche sobre lo financiado (ej. 10)
-                downPayment                  // o monto absoluto de enganche (alternativa a pct)
+                numberOfPayments,
+                downPaymentPct,              // % de enganche sobre lo financiado
+                downPayment                  // o monto absoluto
             } = req.body;
 
             if (!clientId || !Array.isArray(items) || items.length === 0) {
@@ -91,7 +65,6 @@ const initCheckoutRoutes = (models, sequelize) => {
                 let contado = 0, credito = 0;
                 const productUpdates = [];
                 const saleItemsToCreate = [];
-                const enrolments = [];   // { imei, brand, model } de equipos a crédito
 
                 for (const raw of items) {
                     const plan = raw.plan === 'contado' ? 'contado' : 'credito';
@@ -109,37 +82,12 @@ const initCheckoutRoutes = (models, sequelize) => {
                     const subtotal = money(product.price * qty);
                     if (plan === 'contado') contado += subtotal; else credito += subtotal;
 
-                    // IMEI: obligatorio solo si el producto es equipo MDM y la línea va a crédito
-                    let lineImei = null;
-                    if (product.requires_imei && plan === 'credito') {
-                        const n = normalizeImei(raw.imei);
-                        if (!n) throw new Error(`${product.name}: IMEI requerido (14-17 dígitos) para equipo a crédito.`);
-                        if (!isValidImeiLuhn(n)) throw new Error(`${product.name}: el IMEI no pasa validación. Verifica la captura.`);
-
-                        // ¿IMEI ya vendido/activo?
-                        const [dup] = await sequelize.query(
-                            `SELECT d.id, d.sale_id, s.status AS sale_status
-                               FROM devices_mdm d
-                          LEFT JOIN sales s ON s.id = d.sale_id
-                              WHERE d.imei = :imei LIMIT 1`,
-                            { replacements: { imei: n }, transaction: t }
-                        );
-                        if (dup.length && dup[0].sale_id &&
-                            ['completed', 'active', 'pending', 'overdue'].includes(dup[0].sale_status)) {
-                            throw new Error(`IMEI ${n} ya está vinculado a la venta #${dup[0].sale_id}.`);
-                        }
-
-                        lineImei = n;
-                        enrolments.push({ imei: n, brand: product.brand || null, model: product.name || null, alreadyRow: dup.length > 0 });
-                    }
-
                     productUpdates.push({ instance: product, newStock: product.stock - qty });
                     saleItemsToCreate.push({
                         productId: product.id,
                         quantity: qty,
                         priceAtSale: product.price,
-                        payment_plan: plan,
-                        imei: lineImei
+                        payment_plan: plan
                     });
                 }
 
@@ -147,7 +95,6 @@ const initCheckoutRoutes = (models, sequelize) => {
                 credito = money(credito);
                 const totalAmount = money(contado + credito);
 
-                // ---- enganche sobre lo financiado (credito) ----
                 let enganche = 0;
                 if (credito > 0) {
                     if (downPaymentPct !== undefined && downPaymentPct !== null && downPaymentPct !== '') {
@@ -164,8 +111,8 @@ const initCheckoutRoutes = (models, sequelize) => {
                 const isCredit = financiado > 0;
                 const pagadoHoy = money(contado + enganche);
 
-                // Validaciones de crédito
-                let numPagos = null, weekly = null, primeraFecha = null, frecuencia = paymentFrequency || 'weekly';
+                let numPagos = null, weekly = null, primeraFecha = null;
+                const frecuencia = paymentFrequency || 'weekly';
                 if (isCredit) {
                     numPagos = parseInt(numberOfPayments, 10);
                     if (!numPagos || numPagos <= 0) throw new Error('El número de pagos debe ser mayor a cero.');
@@ -177,8 +124,6 @@ const initCheckoutRoutes = (models, sequelize) => {
                     primeraFecha = calcularProximaFechaPago(new Date(), frecuencia, 0);
                 }
 
-                // ---- Crear venta ----
-                // balanceDue = totalAmount - downPayment  →  = financiado (cuadra con tu fórmula actual)
                 const newSale = await Sale.create({
                     clientId,
                     totalAmount,
@@ -195,54 +140,22 @@ const initCheckoutRoutes = (models, sequelize) => {
                     paymentsMade: 0
                 }, { transaction: t });
 
-                // ---- Items ----
                 await SaleItem.bulkCreate(
                     saleItemsToCreate.map(i => ({ ...i, saleId: newSale.id })),
                     { transaction: t }
                 );
 
-                // ---- Stock ----
                 for (const u of productUpdates) {
                     u.instance.stock = u.newStock;
                     await u.instance.save({ transaction: t });
                 }
 
-                // ---- Enrolar IMEIs a devices_mdm (equipos a crédito) ----
-                for (const e of enrolments) {
-                    if (e.alreadyRow) {
-                        await sequelize.query(
-                            `UPDATE devices_mdm
-                                SET sale_id=:saleId, client_id=:clientId, tienda_id=:tiendaId,
-                                    brand=COALESCE(:brand, brand), model=COALESCE(:model, model),
-                                    status='active',
-                                    notes=COALESCE(notes,'') || E'\n[' || NOW()::text || '] Vinculado a venta #' || :saleId,
-                                    updated_at=NOW()
-                              WHERE imei=:imei`,
-                            { replacements: { saleId: newSale.id, clientId, tiendaId, brand: e.brand, model: e.model, imei: e.imei }, transaction: t }
-                        );
-                    } else {
-                        await sequelize.query(
-                            `INSERT INTO devices_mdm
-                                (device_number, imei, brand, model, sale_id, client_id, status, tienda_id, notes, created_at, updated_at)
-                             VALUES
-                                (:imei, :imei, :brand, :model, :saleId, :clientId, 'active', :tiendaId,
-                                 '[' || NOW()::text || '] Creado al cerrar venta #' || :saleId, NOW(), NOW())`,
-                            { replacements: { imei: e.imei, brand: e.brand, model: e.model, saleId: newSale.id, clientId, tiendaId }, transaction: t }
-                        );
-                    }
-                }
-
-                // ---- Pago de hoy (contado + enganche) ----
                 if (pagadoHoy > 0) {
                     const notes = isCredit
                         ? `Pago inicial: contado $${contado.toFixed(2)} + enganche $${enganche.toFixed(2)}`
                         : 'Pago total de venta de contado';
                     await Payment.create({
-                        saleId: newSale.id,
-                        amount: pagadoHoy,
-                        paymentMethod: 'cash',
-                        notes,
-                        tiendaId
+                        saleId: newSale.id, amount: pagadoHoy, paymentMethod: 'cash', notes, tiendaId
                     }, { transaction: t });
                 }
 
@@ -254,8 +167,7 @@ const initCheckoutRoutes = (models, sequelize) => {
                         username: req.user.username,
                         action: 'CREÓ VENTA',
                         details: `Venta #${newSale.id} (${client.name} ${client.lastName || ''}). Total $${totalAmount.toFixed(2)}. ` +
-                                 (isCredit ? `Contado $${contado.toFixed(2)} + enganche $${enganche.toFixed(2)}, financiado $${financiado.toFixed(2)} a ${numPagos} pagos.` : 'Contado.') +
-                                 (enrolments.length ? ` Equipos MDM: ${enrolments.length}.` : ''),
+                                 (isCredit ? `Contado $${contado.toFixed(2)} + enganche $${enganche.toFixed(2)}, financiado $${financiado.toFixed(2)} a ${numPagos} pagos.` : 'Contado.'),
                         tiendaId
                     });
                 } catch (auditError) { console.error('Auditoría:', auditError.message); }
@@ -264,18 +176,7 @@ const initCheckoutRoutes = (models, sequelize) => {
                     success: true,
                     saleId: newSale.id,
                     isCredit,
-                    resumen: {
-                        total: totalAmount,
-                        contado,
-                        credito,
-                        enganche,
-                        financiado,
-                        pagadoHoy,
-                        cuota: weekly,
-                        numeroPagos: numPagos,
-                        primerPago: primeraFecha,
-                        equiposEnrolados: enrolments.length
-                    }
+                    resumen: { total: totalAmount, contado, credito, enganche, financiado, pagadoHoy, cuota: weekly, numeroPagos: numPagos, primerPago: primeraFecha }
                 });
 
             } catch (err) {
